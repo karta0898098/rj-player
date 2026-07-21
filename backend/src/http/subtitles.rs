@@ -1,0 +1,161 @@
+//! `GET /api/videos/:id/subtitles`, `POST /api/videos/:id/pipeline`
+//! (dsd.md §3.1, B2.6).
+//!
+//! Thin adapter: parses/validates the HTTP request, calls into `core::`,
+//! and shapes the JSON response. No business logic lives here.
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
+use serde::{Deserialize, Serialize};
+
+use crate::core::domain::{JobEvent, Stage, VideoStatus};
+use crate::core::pipeline::{Job, PipelineOverrides, VadOverrides};
+use crate::http::error::ApiError;
+use crate::state::SharedState;
+
+/// `GET /api/videos/:id/subtitles` — the canonical `SubtitleDoc` JSON.
+///
+/// `409` (not `404`) when the video exists but isn't `ready` yet, per
+/// dsd.md §3.1: `GET /api/videos/:id/subtitles` -> `409 { status }` while
+/// unfinished.
+pub async fn get_subtitles(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let meta = state
+        .store
+        .load_meta(&id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("no video with id {id}")))?;
+
+    if meta.status != VideoStatus::Ready {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "not_ready",
+            format!("subtitles are not ready yet (status: {:?})", meta.status),
+        ));
+    }
+
+    match state.store.load_subtitles(&id).await? {
+        Some(doc) => Ok(Json(doc).into_response()),
+        None => Err(ApiError::internal(
+            "video status is ready but subtitles.json is missing on disk",
+        )),
+    }
+}
+
+/// Body of `POST /api/videos/:id/pipeline` — every field optional (the
+/// frontend's "regenerate" button contract). Omitted top-level fields fall
+/// back to config (`whisper_model`/`whisper_temperature`) or
+/// `ai/pipeline/asr.py` defaults (`vad`, `initial_prompt`); the
+/// auto-pipeline-after-download path never goes through this handler at all
+/// (it enqueues `Job::Pipeline` directly with `PipelineOverrides::default()`
+/// from `core::pipeline::queue::process_download_job`), so it's unaffected.
+#[derive(Debug, Default, Deserialize)]
+pub struct PipelineRequest {
+    #[serde(default)]
+    pub force: bool,
+    /// One of tiny|base|small|medium|large-v3, passed through unvalidated.
+    #[serde(default)]
+    pub whisper_model: Option<String>,
+    #[serde(default)]
+    pub whisper_temperature: Option<f32>,
+    /// Empty string or omitted both mean "no initial prompt".
+    #[serde(default)]
+    pub initial_prompt: Option<String>,
+    /// Each of the 4 sub-fields optional; omitted ones fall back to
+    /// `ai/pipeline/asr.py`'s baked-in VAD defaults.
+    #[serde(default)]
+    pub vad: VadOverrides,
+    /// The song's real lyrics, when the caller has them. When present (and
+    /// non-blank), the ASR stage force-aligns this text to the audio
+    /// instead of free-transcribing (dsd.md's forced-alignment extension) --
+    /// text comes out exactly as given, only timing is computed. Empty
+    /// string or omitted both mean "no reference lyrics, transcribe as
+    /// usual".
+    #[serde(default)]
+    pub reference_lyrics: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PipelineAccepted {
+    status: &'static str,
+}
+
+/// `POST /api/videos/:id/pipeline` — (re-)run the subtitle pipeline.
+/// Respects the `subtitles.json` cache unless `force: true` (dsd.md §3.1,
+/// §5.1/§7). Enqueues onto the same single-worker job queue as downloads
+/// (dsd.md §8), so it returns immediately with `202` and progress is
+/// observed via `GET /api/videos/:id/events`.
+pub async fn trigger_pipeline(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    body: Option<Json<PipelineRequest>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let mut meta = state
+        .store
+        .load_meta(&id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("no video with id {id}")))?;
+
+    if !state.store.video_file_exists(&id) {
+        return Err(ApiError::bad_request(
+            "video has not finished downloading yet; cannot run the subtitle pipeline",
+        ));
+    }
+
+    let PipelineRequest {
+        force,
+        whisper_model,
+        whisper_temperature,
+        initial_prompt,
+        vad,
+        reference_lyrics,
+    } = body.map(|Json(req)| req).unwrap_or_default();
+
+    // Flip status to `transcribing` SYNCHRONOUSLY, before returning 202 and
+    // before the queue worker picks the job up. Otherwise `meta.status` stays
+    // at its previous (e.g. `ready`) value during the gap between this POST and
+    // the worker starting — and a client that (re)connects its WS in that gap
+    // would get a stale `status: ready` snapshot (ws.rs) and think the *new*
+    // run had already finished. Setting it here closes that window so the WS
+    // snapshot unambiguously reflects "a run is in progress". (A no-op-ish
+    // cache-hit run will bounce it right back to `ready`, which is fine.)
+    meta.status = VideoStatus::Transcribing;
+    meta.last_stage = Some(Stage::Asr);
+    meta.last_error = None;
+    state.store.save_meta(&meta).await?;
+    state.event_hub.publish(
+        &id,
+        JobEvent::Status {
+            status: VideoStatus::Transcribing,
+        },
+    );
+
+    let overrides = PipelineOverrides {
+        whisper_model,
+        whisper_temperature,
+        initial_prompt,
+        vad,
+        reference_lyrics,
+    };
+
+    state
+        .job_tx
+        .send(Job::Pipeline {
+            video_id: id,
+            force,
+            overrides,
+        })
+        .await
+        .map_err(|_| ApiError::internal("job queue is not accepting work (worker stopped)"))?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(PipelineAccepted {
+            status: "transcribing",
+        }),
+    ))
+}

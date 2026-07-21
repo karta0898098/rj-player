@@ -1,0 +1,79 @@
+# rj-player backend config — TEMPLATE.
+#
+# Copy this file to `config.toml` (same directory) and fill in whatever you
+# want to override; `config.toml` is gitignored (holds secrets) and MUST
+# NOT be committed. This file (`config.example.toml`) has no real secrets
+# in it and is safe to commit.
+#
+#   cp config.example.toml config.toml
+#
+# Precedence (highest wins): environment variable > this file's value >
+# built-in default. So exported env vars (e.g. from a run script) always
+# win over config.toml, and config.toml always wins over the hardcoded
+# default — you only need to set the handful of values you actually care
+# about; everything else is left out and falls back automatically.
+#
+# Search path (first match wins): the backend looks for its config file at
+#   1. $RJ_CONFIG, if that env var is set (exact path; if missing, no file
+#      is used rather than falling through to 2/3 below)
+#   2. ./config.toml   (the process's current working directory)
+#   3. ../config.toml  (the repo root, since `cargo run` is normally run
+#                        from `backend/`, one level below this file)
+# A missing config file is perfectly fine — the backend just uses env
+# vars/defaults. A present-but-broken (unparsable) file logs a warning and
+# is ignored rather than crashing the backend.
+#
+# All keys below are optional — every section and every field.
+
+# HTTP port the server binds on 127.0.0.1. Env: PORT. Default: 8080.
+port = 8080
+
+# Root directory for all persisted video data (video.mp4, audio.wav,
+# subtitles.json, meta.json per video). Env: DATA_DIR. Default: "./data".
+data_dir = "./data"
+
+[tools]
+# Path/name of the yt-dlp binary. Env: YT_DLP_PATH. Default: "yt-dlp".
+yt_dlp_path = "yt-dlp"
+
+# Path/name of the ffmpeg binary (used for the 16kHz mono audio.wav
+# extraction that feeds ASR). Env: FFMPEG_PATH. Default: "ffmpeg".
+ffmpeg_path = "ffmpeg"
+
+# yt-dlp `-f` format selector. Env: YT_DLP_FORMAT. Default prefers
+# H.264/AAC capped at 1080p (Safari/WKWebView-friendly). Set to "bv*+ba/b"
+# for best available quality regardless of codec/size.
+# yt_dlp_format = "bv*+ba/b"
+
+[ai]
+# Base directory for the Python AI worker; ai_python/ai_worker derive from
+# this unless AI_PYTHON/AI_WORKER env vars override them individually.
+# Env: AI_DIR. Default: "../ai" (sibling of backend/, since the backend
+# runs from backend/).
+ai_dir = "../ai"
+
+# faster-whisper model size/name. Env: WHISPER_MODEL. Default: "medium"
+# (good accuracy, still much faster than "large-v3"). Other options:
+# "tiny", "base", "small", "large-v3".
+whisper_model = "large-v3"
+
+# Whisper sampling temperature; 0.0 = deterministic. Env: WHISPER_TEMPERATURE.
+temperature = 0.0
+
+[llm]
+# Translation provider: "gemini" | "openai" | "anthropic". Env:
+# LLM_PROVIDER. Leave unset to auto-detect from whichever *_api_key below
+# (or matching env var) is present (gemini preferred, then openai, then
+# anthropic).
+provider = "gemini"
+
+# Override the provider's default model name. Env: LLM_MODEL.
+# model = "gemini-flash-lite-latest"
+
+# API keys — leave blank ("") or delete the line entirely to skip a
+# provider. Only the key matching `provider` (or whichever is auto-detected)
+# needs to be set. These are injected into the AI worker subprocess's
+# environment by the backend; the worker never reads config.toml itself.
+gemini_api_key = ""
+openai_api_key = ""
+anthropic_api_key = ""

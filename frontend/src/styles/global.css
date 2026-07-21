@@ -1,0 +1,35 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Backdrop behind the floating "macOS window" — matches the design
+     handoff prototype's preview canvas; not affected by in-app dark mode
+     (only the window chrome itself is themed, per README §Interactions). */
+  background: #eceef1;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: #e0453f;
+}
+a:hover {
+  color: #c73832;
+}
+
+button,
+input {
+  font-family: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}

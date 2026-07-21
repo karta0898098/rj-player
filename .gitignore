@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────
+# Secrets / local config  — NEVER commit
+# ─────────────────────────────────────────────────────────────
+# Holds LLM API keys + machine-specific overrides. Start from
+# config.example.toml (which IS committed) and fill in your keys.
+/config.toml
+*.env
+.env
+.env.local
+
+# ─────────────────────────────────────────────────────────────
+# App data (downloaded videos, extracted audio, subtitles, CC)
+# ─────────────────────────────────────────────────────────────
+/backend/data/
+data/
+
+# ─────────────────────────────────────────────────────────────
+# Rust (backend) build output
+# ─────────────────────────────────────────────────────────────
+/backend/target/
+target/
+
+# ─────────────────────────────────────────────────────────────
+# Node (frontend)
+# ─────────────────────────────────────────────────────────────
+/frontend/node_modules/
+node_modules/
+/frontend/dist/
+dist/
+*.local
+
+# ─────────────────────────────────────────────────────────────
+# Python AI service (venv is multi-GB: torch, ct2, models)
+# ─────────────────────────────────────────────────────────────
+/ai/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# ─────────────────────────────────────────────────────────────
+# OS / editor
+# ─────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log

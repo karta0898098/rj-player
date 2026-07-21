@@ -1,0 +1,320 @@
+//! Single-worker job queue (dsd.md §2, §8, B1.4/B1.5, B2.6).
+//!
+//! Both download jobs and pipeline (subtitle generation) jobs flow through
+//! this single queue/worker task, so there is never more than one of either
+//! running at a time (dsd.md §8 — avoids Whisper competing with itself or
+//! with a concurrent download for CPU/RAM on this single-user local tool).
+
+use std::sync::Arc;
+
+use serde::Deserialize;
+use tokio::sync::mpsc;
+
+use crate::core::domain::{JobEvent, Stage, VideoMeta, VideoStatus};
+use crate::core::downloader::{ProgressEvent, YtDlp};
+use crate::core::pipeline::hub::EventHub;
+use crate::core::pipeline::orchestrator;
+use crate::core::pipeline::rpc::RpcClient;
+use crate::core::store::FsStore;
+
+/// Per-request Silero VAD knob overrides (dsd.md's per-request "regenerate"
+/// contract). `None` for any field means "use `ai/pipeline/asr.py`'s
+/// baked-in default for that knob" — see `asr.transcribe`'s `vad_overrides`
+/// merge. Derives `Deserialize` so the HTTP layer
+/// (`http::subtitles::PipelineRequest`) can parse the `vad` object straight
+/// out of the `POST /api/videos/:id/pipeline` JSON body without a separate
+/// duplicate struct.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VadOverrides {
+    /// Whether to run the Silero VAD pre-filter at all. `None`/`Some(true)` →
+    /// VAD on (the default; skips instrumental/silence, tightens timings);
+    /// `Some(false)` → VAD off (Whisper sees the whole audio — recovers more
+    /// quiet/sung content but hallucinates over non-speech). The 4 knobs below
+    /// only apply when VAD is on.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub threshold: Option<f32>,
+    #[serde(default)]
+    pub min_silence_duration_ms: Option<u32>,
+    #[serde(default)]
+    pub speech_pad_ms: Option<u32>,
+    #[serde(default)]
+    pub max_speech_duration_s: Option<f32>,
+}
+
+/// Per-request generation-knob overrides threaded from
+/// `POST /api/videos/:id/pipeline`'s optional JSON body all the way to
+/// `ai/pipeline/asr.py`'s `model.transcribe(...)`. Every field left `None`
+/// (or, for `vad`, left with every sub-field `None`) falls back to the
+/// config default (`whisper_model`/`whisper_temperature`) or to asr.py's own
+/// defaults (`vad`, `initial_prompt`). The auto-pipeline-after-download path
+/// (`process_download_job`) always sends `PipelineOverrides::default()`, so
+/// it keeps behaving exactly as before this feature existed.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PipelineOverrides {
+    #[serde(default)]
+    pub whisper_model: Option<String>,
+    #[serde(default)]
+    pub whisper_temperature: Option<f32>,
+    #[serde(default)]
+    pub initial_prompt: Option<String>,
+    #[serde(default)]
+    pub vad: VadOverrides,
+    /// The song's real lyrics, when supplied. `Some` (non-blank) switches
+    /// the ASR stage from free transcription to forced alignment against
+    /// this exact text (dsd.md's forced-alignment extension). `None` is the
+    /// default for both this override and the auto-pipeline-after-download
+    /// path (`PipelineOverrides::default()`), which keeps behaving exactly
+    /// as before this feature existed.
+    #[serde(default)]
+    pub reference_lyrics: Option<String>,
+}
+
+/// A unit of work submitted to the single-worker queue.
+#[derive(Debug, Clone)]
+pub enum Job {
+    /// Download a video, optionally chaining straight into the AI subtitle
+    /// pipeline once the download finishes.
+    Download {
+        video_id: String,
+        url: String,
+        auto_pipeline: bool,
+    },
+    /// (Re-)run the AI subtitle pipeline for an already-downloaded video
+    /// (`POST /api/videos/:id/pipeline`, dsd.md §3.1). `force` bypasses the
+    /// `subtitles.json` cache check (dsd.md §5.1/§7). `overrides` carries
+    /// any per-request generation-knob overrides from the request body;
+    /// `PipelineOverrides::default()` means "use config/asr.py defaults".
+    Pipeline {
+        video_id: String,
+        force: bool,
+        overrides: PipelineOverrides,
+    },
+}
+
+/// Sending half handed out via `AppState` so HTTP handlers can enqueue work.
+pub type JobSender = mpsc::Sender<Job>;
+
+/// Create a new bounded job channel. A modest bound is enough backpressure
+/// for a single-user local tool.
+pub fn job_channel() -> (JobSender, mpsc::Receiver<Job>) {
+    mpsc::channel(32)
+}
+
+/// Drives the queue forever, processing exactly one job at a time. Meant to
+/// be spawned once as a background task at startup.
+pub async fn run_worker(
+    mut rx: mpsc::Receiver<Job>,
+    store: Arc<FsStore>,
+    hub: Arc<EventHub>,
+    ytdlp: Arc<YtDlp>,
+    rpc: Arc<RpcClient>,
+    whisper_model: String,
+    whisper_temperature: f32,
+) {
+    tracing::info!("job queue worker started");
+    while let Some(job) = rx.recv().await {
+        match job {
+            Job::Download {
+                video_id,
+                url,
+                auto_pipeline,
+            } => {
+                process_download_job(
+                    &store,
+                    &hub,
+                    &ytdlp,
+                    &rpc,
+                    &whisper_model,
+                    whisper_temperature,
+                    video_id,
+                    url,
+                    auto_pipeline,
+                )
+                .await;
+            }
+            Job::Pipeline {
+                video_id,
+                force,
+                overrides,
+            } => {
+                orchestrator::run_pipeline(
+                    &store,
+                    &hub,
+                    &rpc,
+                    &video_id,
+                    &whisper_model,
+                    whisper_temperature,
+                    force,
+                    &overrides,
+                )
+                .await;
+            }
+        }
+    }
+    tracing::warn!("job queue worker stopped (channel closed)");
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_download_job(
+    store: &FsStore,
+    hub: &EventHub,
+    ytdlp: &YtDlp,
+    rpc: &RpcClient,
+    whisper_model: &str,
+    whisper_temperature: f32,
+    video_id: String,
+    url: String,
+    auto_pipeline: bool,
+) {
+    tracing::info!(%video_id, auto_pipeline, "download job starting");
+
+    let mut meta = store
+        .load_meta(&video_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| VideoMeta::new(video_id.clone(), url.clone()));
+
+    meta.status = VideoStatus::Downloading;
+    meta.last_stage = Some(Stage::Download);
+    meta.last_error = None;
+    persist(store, &meta).await;
+    hub.publish(
+        &video_id,
+        JobEvent::Status {
+            status: VideoStatus::Downloading,
+        },
+    );
+
+    let metadata = match ytdlp.fetch_metadata(&url).await {
+        Ok(m) => m,
+        Err(err) => {
+            fail_job(store, hub, &mut meta, Stage::Download, err.to_string()).await;
+            return;
+        }
+    };
+
+    meta.title = metadata.title;
+    meta.channel = metadata.channel;
+    meta.duration_ms = metadata.duration_ms;
+    if !metadata.video_id.is_empty() && metadata.video_id != meta.video_id {
+        tracing::warn!(
+            expected = %meta.video_id,
+            actual = %metadata.video_id,
+            "yt-dlp resolved a different video id than the URL-derived one"
+        );
+    }
+
+    let video_path = store.video_path(&video_id);
+    let video_id_for_cb = video_id.clone();
+    let download_result = ytdlp
+        .download_video(&url, &video_path, move |event| match event {
+            ProgressEvent::Percent(pct) => {
+                hub.publish(
+                    &video_id_for_cb,
+                    JobEvent::Progress {
+                        stage: Stage::Download,
+                        pct,
+                    },
+                );
+            }
+            ProgressEvent::Log(line) => {
+                hub.publish(&video_id_for_cb, JobEvent::Log { line });
+            }
+        })
+        .await;
+
+    if let Err(err) = download_result {
+        fail_job(store, hub, &mut meta, Stage::Download, err.to_string()).await;
+        return;
+    }
+
+    // Audio extraction is for the future Whisper step (Phase 2) and must
+    // never block marking the video as downloaded/usable.
+    let audio_path = store.audio_path(&video_id);
+    if let Err(err) = ytdlp.extract_audio(&video_path, &audio_path).await {
+        tracing::warn!(%video_id, %err, "audio extraction failed (non-fatal)");
+        hub.publish(
+            &video_id,
+            JobEvent::Log {
+                line: format!("audio extraction failed (non-fatal): {err}"),
+            },
+        );
+    }
+
+    // Manual Japanese CC (dsd.md's ASR-precedence extension: reference_lyrics
+    // > manual CC > Whisper ASR). Mirrors audio extraction above -- a fetch
+    // failure, or the video simply having no manual ja captions (the normal
+    // outcome for most videos), must never block marking it downloaded/usable;
+    // the pipeline just falls back to Whisper ASR.
+    let cc_path = store.cc_path(&video_id);
+    match ytdlp.fetch_manual_ja_subs(&url, &cc_path).await {
+        Ok(true) => {
+            tracing::info!(%video_id, "found manual Japanese CC, saved as cc.srt");
+        }
+        Ok(false) => {
+            tracing::info!(%video_id, "no manual Japanese CC available for this video");
+        }
+        Err(err) => {
+            tracing::warn!(%video_id, %err, "manual Japanese CC fetch failed (non-fatal)");
+            hub.publish(
+                &video_id,
+                JobEvent::Log {
+                    line: format!("manual Japanese CC fetch failed (non-fatal): {err}"),
+                },
+            );
+        }
+    }
+
+    meta.status = VideoStatus::Downloaded;
+    meta.last_error = None;
+    persist(store, &meta).await;
+
+    hub.publish(
+        &video_id,
+        JobEvent::Done {
+            status: VideoStatus::Downloaded,
+        },
+    );
+
+    // Chain straight into the AI subtitle pipeline (ASR -> tokenize ->
+    // romaji -> translate -> assemble) on the same single-worker task, so
+    // download and pipeline stay serialized end to end for one video
+    // without a second enqueue round-trip (dsd.md §6.1, B2.6).
+    if auto_pipeline {
+        orchestrator::run_pipeline(
+            store,
+            hub,
+            rpc,
+            &video_id,
+            whisper_model,
+            whisper_temperature,
+            false,
+            &PipelineOverrides::default(),
+        )
+        .await;
+    }
+}
+
+async fn fail_job(
+    store: &FsStore,
+    hub: &EventHub,
+    meta: &mut VideoMeta,
+    stage: Stage,
+    message: String,
+) {
+    meta.status = VideoStatus::DownloadFailed;
+    meta.last_stage = Some(stage);
+    meta.last_error = Some(message.clone());
+    persist(store, meta).await;
+    tracing::error!(video_id = %meta.video_id, ?stage, %message, "download job failed");
+    hub.publish(&meta.video_id, JobEvent::Error { stage, message });
+}
+
+async fn persist(store: &FsStore, meta: &VideoMeta) {
+    if let Err(err) = store.save_meta(meta).await {
+        tracing::error!(video_id = %meta.video_id, %err, "failed to persist meta.json");
+    }
+}
