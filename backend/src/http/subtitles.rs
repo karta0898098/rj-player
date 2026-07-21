@@ -159,3 +159,55 @@ pub async fn trigger_pipeline(
         }),
     ))
 }
+
+/// `POST /api/videos/:id/retranslate` — re-run ONLY the translate stage
+/// against the video's existing `subtitles.json` (ja_text/ja_tokens/romaji/
+/// timing untouched, just re-filling `zh_text`) — no ASR. dsd.md §7
+/// extended: retry a stuck/degraded translation without redoing the slow,
+/// expensive Whisper pass. `400` if there's no `subtitles.json` yet (run the
+/// full pipeline first) — same reasoning as `trigger_pipeline` requiring the
+/// video file to exist before it can run.
+pub async fn trigger_retranslate(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let mut meta = state
+        .store
+        .load_meta(&id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("no video with id {id}")))?;
+
+    if state.store.load_subtitles(&id).await?.is_none() {
+        return Err(ApiError::bad_request(
+            "no existing subtitles.json to retranslate; run the full pipeline first",
+        ));
+    }
+
+    // Flip status SYNCHRONOUSLY, before returning 202 — same reasoning as
+    // trigger_pipeline: closes the gap where a WS (re)connect between this
+    // POST and the queue worker picking the job up would otherwise observe
+    // a stale `ready` status and think this run had already finished.
+    meta.status = VideoStatus::Translating;
+    meta.last_stage = Some(Stage::Translate);
+    meta.last_error = None;
+    state.store.save_meta(&meta).await?;
+    state.event_hub.publish(
+        &id,
+        JobEvent::Status {
+            status: VideoStatus::Translating,
+        },
+    );
+
+    state
+        .job_tx
+        .send(Job::Retranslate { video_id: id })
+        .await
+        .map_err(|_| ApiError::internal("job queue is not accepting work (worker stopped)"))?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(PipelineAccepted {
+            status: "translating",
+        }),
+    ))
+}

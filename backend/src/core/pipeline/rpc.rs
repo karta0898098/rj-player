@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::core::domain::{Stage, SubtitleDoc};
+use crate::core::domain::{Cue, Stage, SubtitleDoc};
 
 #[derive(Debug, Error)]
 pub enum RpcError {
@@ -85,6 +85,22 @@ pub struct GenerateSubtitlesParams {
     pub cc_path: Option<String>,
 }
 
+/// Params for the `retranslate` RPC method — re-runs ONLY the translate
+/// stage against `cues` from an existing `SubtitleDoc` (no ASR). `cues`
+/// carries `ja_text`/`ja_tokens`/`romaji`/timing straight through
+/// unmodified; the worker only overwrites `zh_text`. Everything else
+/// mirrors the corresponding fields of the doc being retranslated.
+#[derive(Debug, Clone, Serialize)]
+pub struct RetranslateParams {
+    pub video_id: String,
+    pub source_lang: String,
+    pub target_lang: String,
+    pub duration_ms: u64,
+    pub cues: Vec<Cue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
 /// The 4 Silero VAD knobs `ai/pipeline/asr.py`'s `transcribe(...)` accepts
 /// as `vad_overrides`. Each field omitted from the outbound JSON when
 /// `None`, so the worker's dict-merge only overrides what was actually
@@ -106,12 +122,19 @@ pub struct VadParams {
 /// Non-terminal events forwarded to the caller of [`RpcClient::generate_subtitles`]
 /// while a request is in flight, so the orchestrator can mirror them onto the
 /// WebSocket `EventHub` (dsd.md §3.2).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum WorkerProgress {
     /// The worker has entered a new pipeline stage.
     Stage(Stage),
     /// Percent-complete progress within a stage.
     Progress { stage: Stage, pct: u8 },
+    /// A pre-translate snapshot doc (ja_text/ja_tokens/romaji filled,
+    /// zh_text null) emitted right after the romaji stage, before translate
+    /// starts — lets the caller persist that work immediately rather than
+    /// only on the terminal `result`/`error` (see `ai/worker.py`'s
+    /// `partial_result` event and dsd.md §7's "don't throw away completed
+    /// work", extended from crash-forensics to the common case).
+    Partial(SubtitleDoc),
 }
 
 #[derive(Debug, Serialize)]
@@ -142,6 +165,11 @@ enum WorkerEventPayload {
         pct: u8,
     },
     Result {
+        subtitles: SubtitleDoc,
+    },
+    /// Non-terminal — a `result`/`error` for the same request id always
+    /// follows. See `WorkerProgress::Partial`.
+    PartialResult {
         subtitles: SubtitleDoc,
     },
     Error {
@@ -328,6 +356,9 @@ impl RpcClient {
                     WorkerEventPayload::Progress { stage, pct } => {
                         on_progress(WorkerProgress::Progress { stage, pct });
                     }
+                    WorkerEventPayload::PartialResult { subtitles } => {
+                        on_progress(WorkerProgress::Partial(subtitles));
+                    }
                     WorkerEventPayload::Result { subtitles } => return Ok(subtitles),
                     WorkerEventPayload::Error {
                         stage,
@@ -342,6 +373,76 @@ impl RpcClient {
                     }
                     WorkerEventPayload::Pong => {
                         tracing::warn!("unexpected pong event during generate_subtitles");
+                    }
+                },
+                Some(Ok(_stale)) => continue, // event for a previous/unrelated request id
+                Some(Err(err)) => {
+                    Self::drop_process(&mut guard).await;
+                    return Err(err);
+                }
+                None => {
+                    Self::drop_process(&mut guard).await;
+                    return Err(RpcError::WorkerExited);
+                }
+            }
+        }
+    }
+
+    /// Re-run ONLY the translate stage against already-computed cues (dsd.md
+    /// §7 extended: retry translation without redoing ASR). `params.cues`
+    /// carries `ja_text`/`ja_tokens`/`romaji`/timing straight from an
+    /// existing `subtitles.json` — the worker passes those through untouched
+    /// and only overwrites `zh_text`. Same terminal shape as
+    /// `generate_subtitles`: blocks until a `result` or `error`, invoking
+    /// `on_progress` for `stage`/`progress` events along the way.
+    pub async fn retranslate(
+        &self,
+        params: RetranslateParams,
+        mut on_progress: impl FnMut(WorkerProgress) + Send,
+    ) -> Result<SubtitleDoc, RpcError> {
+        let id = format!("req-{}", Uuid::new_v4());
+        let line = serde_json::to_string(&RpcRequest {
+            id: &id,
+            method: "retranslate",
+            params,
+        })?;
+
+        let mut guard = self.process.lock().await;
+        self.ensure_spawned(&mut guard).await?;
+        let proc = guard.as_mut().expect("just ensured spawned");
+
+        if let Err(err) = proc.write_line(&line).await {
+            Self::drop_process(&mut guard).await;
+            return Err(err);
+        }
+
+        loop {
+            let proc = guard.as_mut().expect("still spawned");
+            match proc.events_rx.recv().await {
+                Some(Ok(env)) if env.id == id => match env.payload {
+                    WorkerEventPayload::Stage { stage } => {
+                        on_progress(WorkerProgress::Stage(stage));
+                    }
+                    WorkerEventPayload::Progress { stage, pct } => {
+                        on_progress(WorkerProgress::Progress { stage, pct });
+                    }
+                    WorkerEventPayload::PartialResult { subtitles } => {
+                        on_progress(WorkerProgress::Partial(subtitles));
+                    }
+                    WorkerEventPayload::Result { subtitles } => return Ok(subtitles),
+                    WorkerEventPayload::Error {
+                        stage,
+                        message,
+                        partial,
+                    } => {
+                        return Err(RpcError::Worker {
+                            stage,
+                            message,
+                            partial,
+                        });
+                    }
+                    WorkerEventPayload::Pong => {
+                        tracing::warn!("unexpected pong event during retranslate");
                     }
                 },
                 Some(Ok(_stale)) => continue, // event for a previous/unrelated request id
@@ -533,6 +634,7 @@ mod tests {
                 |event| match event {
                     WorkerProgress::Stage(_) => saw_stage = true,
                     WorkerProgress::Progress { .. } => saw_progress = true,
+                    WorkerProgress::Partial(_) => {}
                 },
             )
             .await

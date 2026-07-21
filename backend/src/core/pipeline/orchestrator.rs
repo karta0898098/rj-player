@@ -17,7 +17,7 @@ use crate::core::domain::{
 use crate::core::pipeline::hub::EventHub;
 use crate::core::pipeline::queue::PipelineOverrides;
 use crate::core::pipeline::rpc::{
-    GenerateSubtitlesParams, RpcClient, RpcError, VadParams, WorkerProgress,
+    GenerateSubtitlesParams, RetranslateParams, RpcClient, RpcError, VadParams, WorkerProgress,
 };
 use crate::core::store::FsStore;
 
@@ -188,6 +188,30 @@ pub async fn run_pipeline(
             WorkerProgress::Progress { stage, pct } => {
                 hub.publish(video_id, JobEvent::Progress { stage, pct });
             }
+            WorkerProgress::Partial(doc) => {
+                // ASR/tokenize/romaji are done; translate (a separate LLM
+                // round-trip that can retry for a while) hasn't started yet.
+                // Persist NOW instead of waiting for the terminal event, so
+                // that work is never at risk regardless of how translate
+                // goes. `on_progress` is a sync callback (see rpc.rs), so
+                // the actual write is spawned rather than awaited here —
+                // it's a small JSON file, done in the time translate takes
+                // to make even its first network call.
+                let store = store.clone();
+                let video_id = video_id.to_string();
+                tokio::spawn(async move {
+                    match store.save_subtitles(&doc).await {
+                        Ok(()) => tracing::info!(
+                            %video_id,
+                            "persisted pre-translate subtitles.json snapshot"
+                        ),
+                        Err(err) => tracing::warn!(
+                            %video_id, %err,
+                            "failed to persist pre-translate subtitles.json snapshot"
+                        ),
+                    }
+                });
+            }
         })
         .await;
 
@@ -240,6 +264,139 @@ pub async fn run_pipeline(
             // the failure.
             let last_stage = meta.last_stage.unwrap_or(Stage::Asr);
             fail(store, hub, &mut meta, last_stage, err.to_string(), None).await;
+        }
+    }
+}
+
+/// Re-run ONLY the translate stage against the video's existing
+/// `subtitles.json` — no ASR (dsd.md §7 extended: retry translation without
+/// redoing the slow/expensive Whisper pass). Requires a `subtitles.json` to
+/// already exist (from a prior full pipeline run, `run_pipeline`'s
+/// pre-translate snapshot, or an earlier retranslate) — there's nothing to
+/// re-translate otherwise.
+pub async fn run_retranslate(store: &FsStore, hub: &EventHub, rpc: &RpcClient, video_id: &str) {
+    let mut meta = match store.load_meta(video_id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            tracing::error!(%video_id, "run_retranslate called for a video with no meta.json; skipping");
+            return;
+        }
+        Err(err) => {
+            tracing::error!(%video_id, %err, "failed to load meta.json before retranslating; skipping");
+            return;
+        }
+    };
+
+    let existing = match store.load_subtitles(video_id).await {
+        Ok(Some(doc)) => doc,
+        Ok(None) => {
+            fail(
+                store,
+                hub,
+                &mut meta,
+                Stage::Translate,
+                "no existing subtitles.json to retranslate".to_string(),
+                None,
+            )
+            .await;
+            return;
+        }
+        Err(err) => {
+            fail(
+                store,
+                hub,
+                &mut meta,
+                Stage::Translate,
+                format!("failed to read subtitles.json: {err}"),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+
+    meta.status = VideoStatus::Translating;
+    meta.last_stage = Some(Stage::Translate);
+    meta.last_error = None;
+    persist(store, &meta).await;
+    hub.publish(
+        video_id,
+        JobEvent::Status {
+            status: VideoStatus::Translating,
+        },
+    );
+
+    let params = RetranslateParams {
+        video_id: video_id.to_string(),
+        source_lang: existing.language_source.clone(),
+        target_lang: existing.target_lang.clone(),
+        duration_ms: existing.duration_ms,
+        cues: existing.cues.clone(),
+        source: existing.source.clone(),
+    };
+
+    let result = rpc
+        .retranslate(params, |event| match event {
+            WorkerProgress::Stage(stage) => {
+                hub.publish(
+                    video_id,
+                    JobEvent::Status {
+                        status: status_for_stage(stage),
+                    },
+                );
+            }
+            WorkerProgress::Progress { stage, pct } => {
+                hub.publish(video_id, JobEvent::Progress { stage, pct });
+            }
+            // `retranslate` has no ASR/romaji stage before it to snapshot —
+            // the worker never emits this event for this method.
+            WorkerProgress::Partial(_) => {}
+        })
+        .await;
+
+    match result {
+        Ok(doc) => {
+            if let Err(err) = store.save_subtitles(&doc).await {
+                fail(
+                    store,
+                    hub,
+                    &mut meta,
+                    Stage::Assemble,
+                    format!("failed to write subtitles.json: {err}"),
+                    None,
+                )
+                .await;
+                return;
+            }
+            meta.status = VideoStatus::Ready;
+            meta.last_stage = Some(Stage::Assemble);
+            meta.last_error = None;
+            persist(store, &meta).await;
+            hub.publish(
+                video_id,
+                JobEvent::Done {
+                    status: VideoStatus::Ready,
+                },
+            );
+            tracing::info!(%video_id, "retranslate complete, subtitles ready");
+        }
+        Err(RpcError::Worker {
+            stage,
+            message,
+            partial,
+        }) => {
+            fail(
+                store,
+                hub,
+                &mut meta,
+                stage.unwrap_or(Stage::Translate),
+                message,
+                partial.map(|b| *b),
+            )
+            .await;
+        }
+        Err(err) => {
+            fail(store, hub, &mut meta, Stage::Translate, err.to_string(), None).await;
         }
     }
 }
@@ -302,7 +459,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::core::domain::VideoMeta;
+    use crate::core::domain::subtitle::JaToken;
+    use crate::core::domain::{Cue, VideoMeta};
 
     fn stub_worker_path() -> String {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -367,6 +525,133 @@ mod tests {
             .expect("subtitles.json should have been written");
         assert_eq!(doc.video_id, "abc12345678");
         assert_eq!(doc.cues.len(), 1);
+    }
+
+    /// The pre-translate snapshot (`WorkerProgress::Partial` handling in
+    /// `run_pipeline`) must land on disk WHILE translate is still running,
+    /// not just as a side effect of the job eventually finishing — that's
+    /// the whole point (don't lose ASR work to a stuck/slow translate). The
+    /// `slow_translate` stub mode sleeps 200ms between emitting the
+    /// snapshot and its final result, giving this test a window to observe
+    /// the snapshot (zh_text still null) before the job completes.
+    #[tokio::test]
+    async fn pretranslate_snapshot_is_persisted_before_the_job_finishes() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::with_args(
+            "python3",
+            vec![stub_worker_path(), "slow_translate".to_string()],
+        );
+
+        seed_video(&store, "slowvideo001", VideoStatus::Downloaded).await;
+
+        let store_for_job = store.clone();
+        let handle = tokio::spawn(async move {
+            run_pipeline(
+                &store_for_job,
+                &hub,
+                &rpc,
+                "slowvideo001",
+                "small",
+                0.0,
+                false,
+                &PipelineOverrides::default(),
+            )
+            .await;
+        });
+
+        let mut saw_snapshot = false;
+        for _ in 0..50 {
+            if let Ok(Some(doc)) = store.load_subtitles("slowvideo001").await {
+                if !doc.cues.is_empty() && doc.cues[0].zh_text.is_none() {
+                    saw_snapshot = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            saw_snapshot,
+            "expected the pre-translate snapshot (zh_text: null) to be persisted \
+             to subtitles.json before the job finished"
+        );
+
+        handle.await.expect("run_pipeline task panicked");
+
+        let final_doc = store
+            .load_subtitles("slowvideo001")
+            .await
+            .unwrap()
+            .expect("final subtitles.json should exist");
+        assert_eq!(final_doc.cues[0].zh_text.as_deref(), Some("你好"));
+        let meta = store.load_meta("slowvideo001").await.unwrap().unwrap();
+        assert_eq!(meta.status, VideoStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn retranslate_reuses_existing_cues_and_marks_ready() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "retranslate01", VideoStatus::PipelineFailed).await;
+        let existing = SubtitleDoc {
+            version: SUBTITLE_DOC_VERSION,
+            video_id: "retranslate01".to_string(),
+            language_source: "ja".to_string(),
+            target_lang: "zh-TW".to_string(),
+            duration_ms: 2500,
+            cues: vec![Cue {
+                id: 0,
+                start_ms: 0,
+                end_ms: 2500,
+                ja_text: "こんにちは".to_string(),
+                ja_tokens: vec![JaToken {
+                    t: "こんにちは".to_string(),
+                    reading: None,
+                }],
+                romaji: "konnichiwa".to_string(),
+                zh_text: None,
+            }],
+            translate_partial: Some(true),
+            source: Some("asr".to_string()),
+        };
+        store.save_subtitles(&existing).await.unwrap();
+
+        run_retranslate(&store, &hub, &rpc, "retranslate01").await;
+
+        let meta = store.load_meta("retranslate01").await.unwrap().unwrap();
+        assert_eq!(meta.status, VideoStatus::Ready);
+        assert_eq!(meta.last_error, None);
+
+        let doc = store.load_subtitles("retranslate01").await.unwrap().unwrap();
+        // ja_text/ja_tokens/romaji/timing pass through untouched -- only
+        // zh_text (the stub's canned "STUB:<ja_text>") changes.
+        assert_eq!(doc.cues[0].ja_text, "こんにちは");
+        assert_eq!(doc.cues[0].romaji, "konnichiwa");
+        assert_eq!(doc.cues[0].zh_text.as_deref(), Some("STUB:こんにちは"));
+    }
+
+    #[tokio::test]
+    async fn retranslate_fails_cleanly_without_existing_subtitles() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "noexisting001", VideoStatus::Downloaded).await;
+        // Deliberately no subtitles.json written.
+
+        run_retranslate(&store, &hub, &rpc, "noexisting001").await;
+
+        let meta = store.load_meta("noexisting001").await.unwrap().unwrap();
+        assert_eq!(meta.status, VideoStatus::PipelineFailed);
+        assert!(meta
+            .last_error
+            .unwrap()
+            .contains("no existing subtitles.json"));
     }
 
     #[tokio::test]

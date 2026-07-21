@@ -16,6 +16,7 @@ pub fn build_router(state: SharedState) -> Router {
             "/api/videos",
             get(videos::list_videos).post(videos::create_video),
         )
+        .route("/api/videos/preview", post(videos::preview_video))
         .route("/api/videos/:id", get(videos::get_video))
         .route("/api/videos/:id/events", get(ws::video_events))
         .route("/api/videos/:id/subtitles", get(subtitles::get_subtitles))
@@ -23,6 +24,11 @@ pub fn build_router(state: SharedState) -> Router {
             "/api/videos/:id/pipeline",
             post(subtitles::trigger_pipeline),
         )
+        .route(
+            "/api/videos/:id/retranslate",
+            post(subtitles::trigger_retranslate),
+        )
+        .route("/api/videos/:id/cancel", post(videos::cancel_video))
         .route("/media/:id/video", get(media::serve_video))
         // Permissive CORS for local dev so the Vite dev server (a different
         // origin/port) can call the API directly without a proxy.

@@ -1,13 +1,16 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ACCENT } from '../theme.js';
 import { findActiveCue, formatTime, formatPipelineStatusLabel, PIPELINE_ACTIVE_STATUSES } from '../utils.js';
 
-// Subtitle-list sidebar — right column of the two-column layout (README
-// change #3). Mirrors the EXACT active-cue lookup SubtitleOverlay.jsx uses —
+// Subtitle-list body — one of two tabs hosted inside SidebarPanel.jsx (the
+// other being PlaylistPanel.jsx); SidebarPanel owns the shared width/
+// collapse/tab-header chrome, this component owns only the scrollable cue
+// list itself. Mirrors the EXACT active-cue lookup SubtitleOverlay.jsx uses —
 // findActiveCue(cues, currentTime*1000 - subtitleOffsetMs) — so the
 // highlighted row here and the on-video subtitle never disagree about which
 // cue is active. Clicking a row seeks via onSeekToCue (wired to App.jsx,
-// which sets videoRef.current.currentTime + setCurrentTime).
+// which sets videoRef.current.currentTime + setCurrentTime). Requires its
+// parent to be `position: relative` -- the "回到目前播放" button anchors to it.
 export default function SubtitleList({
   theme,
   cues,
@@ -18,48 +21,58 @@ export default function SubtitleList({
   subtitlePct,
   onSeekToCue,
 }) {
+  // Whether the list should keep auto-scrolling the active row into view.
+  // Starts pinned (old behavior); the moment the user scrolls the list by
+  // hand it un-pins so their position stops getting yanked back down on
+  // every cue change — they get it back via the "回到目前播放" button or by
+  // clicking a row.
+  const [pinned, setPinned] = useState(true);
   const activeRowRef = useRef(null);
+  // Guards handleScroll against reacting to our OWN scrollIntoView calls
+  // (fired below) as if they were user-initiated scrolling.
+  const programmaticScrollRef = useRef(false);
 
   const hasCues = Boolean(cues && cues.length);
   const lookupMs = currentTime * 1000 - (subtitleOffsetMs || 0);
   const activeCue = hasCues ? findActiveCue(cues, lookupMs) : null;
   const activeId = activeCue ? activeCue.id : null;
 
-  // Auto-scroll the active row into view — `block: 'nearest'` only moves the
-  // list's own scroll container (the nearest scrollable ancestor of the
-  // row), never the page itself.
+  // Auto-scroll the active row into view — only while `pinned`. `block:
+  // 'nearest'` only moves the list's own scroll container (the nearest
+  // scrollable ancestor of the row), never the page itself.
   useEffect(() => {
+    if (!pinned || !activeRowRef.current) return;
+    programmaticScrollRef.current = true;
+    activeRowRef.current.scrollIntoView({ block: 'nearest' });
+    // The resulting 'scroll' event fires asynchronously (next frame) — clear
+    // the guard just after so a genuine user scroll right afterwards isn't
+    // mistaken for our own.
+    const t = setTimeout(() => {
+      programmaticScrollRef.current = false;
+    }, 100);
+    return () => clearTimeout(t);
+  }, [activeId, pinned]);
+
+  function handleScroll() {
+    if (programmaticScrollRef.current) return;
+    setPinned(false);
+  }
+
+  function handleRowClick(cue) {
+    setPinned(true);
+    onSeekToCue(cue);
+  }
+
+  function jumpToCurrent() {
+    setPinned(true);
     if (activeRowRef.current) {
       activeRowRef.current.scrollIntoView({ block: 'nearest' });
     }
-  }, [activeId]);
+  }
 
   return (
-    <div
-      style={{
-        width: 340,
-        flexShrink: 0,
-        borderLeft: `1px solid ${theme.border}`,
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: 0,
-      }}
-    >
-      <div
-        style={{
-          flexShrink: 0,
-          padding: '14px 16px',
-          borderBottom: `1px solid ${theme.border}`,
-          display: 'flex',
-          alignItems: 'baseline',
-          gap: 8,
-        }}
-      >
-        <span style={{ color: theme.textPrimary, fontSize: 13, fontWeight: 700 }}>字幕</span>
-        {hasCues && <span style={{ color: theme.textTertiary, fontSize: 11 }}>{cues.length} 句</span>}
-      </div>
-
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+    <>
+      <div onScroll={handleScroll} className="subtitle-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {!hasCues ? (
           <div
             style={{
@@ -85,7 +98,7 @@ export default function SubtitleList({
                 key={cue.id}
                 ref={isActive ? activeRowRef : null}
                 className="subtitle-row"
-                onClick={() => onSeekToCue(cue)}
+                onClick={() => handleRowClick(cue)}
                 style={{
                   display: 'flex',
                   gap: 10,
@@ -139,6 +152,30 @@ export default function SubtitleList({
           })
         )}
       </div>
-    </div>
+
+      {!pinned && hasCues && activeId != null && (
+        <button
+          type="button"
+          onClick={jumpToCurrent}
+          style={{
+            position: 'absolute',
+            left: '50%',
+            bottom: 14,
+            transform: 'translateX(-50%)',
+            padding: '6px 12px',
+            borderRadius: 999,
+            border: 'none',
+            background: ACCENT,
+            color: '#fff',
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: 'pointer',
+            boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+          }}
+        >
+          ↓ 回到目前播放
+        </button>
+      )}
+    </>
   );
 }

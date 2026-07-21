@@ -33,6 +33,10 @@ pub struct VideoMetadata {
     pub title: String,
     pub channel: String,
     pub duration_ms: u64,
+    /// Whether yt-dlp's `categories` field flagged this as a music video
+    /// (the queue feature's music-MV auto-detect, dsd.md §2/§8). Confirmed
+    /// sufficient on its own -- no title-keyword fallback.
+    pub is_music: bool,
 }
 
 /// A single line/tick of progress emitted while downloading.
@@ -57,6 +61,16 @@ struct YtDlpInfo {
     uploader: Option<String>,
     #[serde(default)]
     duration: Option<f64>,
+    #[serde(default)]
+    categories: Vec<String>,
+}
+
+/// Whether `categories` (yt-dlp's own YouTube category classification)
+/// marks this as a music video -- currently the sole signal used for
+/// music-MV auto-detect, kept as a pure function so it's unit-testable
+/// without invoking the real `yt-dlp` subprocess.
+fn is_music_category(categories: &[String]) -> bool {
+    categories.iter().any(|c| c == "Music")
 }
 
 /// Extract the 11-character YouTube video id from a URL. Supports the
@@ -131,6 +145,7 @@ impl YtDlp {
             .map_err(|e| DownloaderError::MetadataParse(e.to_string()))?;
 
         let duration_ms = info.duration.map(|d| (d * 1000.0).round() as u64).unwrap_or(0);
+        let is_music = is_music_category(&info.categories);
 
         Ok(VideoMetadata {
             video_id: info.id,
@@ -140,6 +155,7 @@ impl YtDlp {
                 .or(info.uploader)
                 .unwrap_or_else(|| "Unknown".to_string()),
             duration_ms,
+            is_music,
         })
     }
 
@@ -356,6 +372,21 @@ fn normalize_cc_files(video_dir: &Path, cc_path: &Path) -> Result<bool, Download
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_music_category_true_when_categories_include_music() {
+        assert!(is_music_category(&["Music".to_string()]));
+        assert!(is_music_category(&[
+            "Music".to_string(),
+            "People & Blogs".to_string()
+        ]));
+    }
+
+    #[test]
+    fn is_music_category_false_when_no_music_category() {
+        assert!(!is_music_category(&["Entertainment".to_string()]));
+        assert!(!is_music_category(&[]));
+    }
 
     #[test]
     fn extracts_watch_url() {

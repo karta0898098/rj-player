@@ -2,9 +2,12 @@ import ProgressTrack from './ProgressTrack.jsx';
 import { ACCENT } from '../theme.js';
 
 // Control bar — README §版面結構 4. Progress track, play/pause (34px), time
-// label, mute + volume slider, 日/中/拼 subtitle chips, theater-mode button,
-// settings gear. `settingsSlot` renders the anchored SettingsPopover (passed
-// in by App so ControlBar doesn't need to know about App-level state).
+// label, mute + volume slider, theater-mode button, settings gear.
+// `settingsSlot` renders the anchored SettingsPopover (passed in by App so
+// ControlBar doesn't need to know about App-level state). The 日/中/拼
+// subtitle on/off toggles used to live here as chips — moved into
+// SettingsPopover's "字幕樣式" section, alongside each layer's size/color/
+// shadow controls, so all subtitle appearance settings live in one place.
 export default function ControlBar({
   theme,
   currentTime,
@@ -17,13 +20,6 @@ export default function ControlBar({
   volume,
   onVolumeChange,
   onToggleMute,
-  subJP,
-  subCN,
-  subRomaji,
-  onToggleSubJP,
-  onToggleSubCN,
-  onToggleSubRomaji,
-  translatePartial,
   theaterMode,
   onToggleTheater,
   isFullscreen,
@@ -33,16 +29,6 @@ export default function ControlBar({
   settingsAnchorRef,
   settingsSlot,
 }) {
-  const chipStyle = (active) => ({
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: 12,
-    fontWeight: 600,
-    padding: '6px 10px',
-    borderRadius: 7,
-    background: active ? ACCENT : theme.chipInactiveBg,
-    color: active ? '#fff' : theme.chipInactiveText,
-  });
   const volumeIcon = volume === 0 ? '🔇' : volume < 50 ? '🔉' : '🔊';
 
   return (
@@ -110,54 +96,27 @@ export default function ControlBar({
 
         <div style={{ flex: 1 }} />
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {/* 日/中/拼 independently show/hide their SubtitleOverlay layer (B3.3). */}
-          <button onClick={onToggleSubJP} style={chipStyle(subJP)}>
-            日
-          </button>
+        {/* Meaningless while fullscreen (theater mode only affects the
+            windowed layout's VideoInfo row / width cap) — hidden there
+            rather than just disabled, since it'd otherwise look like a
+            real option. */}
+        {!isFullscreen && (
           <button
-            onClick={onToggleSubCN}
-            style={{ ...chipStyle(subCN), position: 'relative' }}
-            title={translatePartial ? '部分中文翻譯缺失' : undefined}
+            onClick={onToggleTheater}
+            style={{
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 600,
+              padding: '7px 12px',
+              borderRadius: 7,
+              background: theaterMode ? ACCENT : theme.chipInactiveBg,
+              color: theaterMode ? '#fff' : theme.chipInactiveText,
+            }}
           >
-            中
-            {/* dsd.md §7 translate_partial — minimal hint that some 中文 lines
-                are missing, per B3.4's "optional, keep it minimal". */}
-            {translatePartial && (
-              <span
-                style={{
-                  position: 'absolute',
-                  top: -2,
-                  right: -2,
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: '#ffb020',
-                  boxShadow: '0 0 0 1.5px rgba(0,0,0,0.3)',
-                }}
-              />
-            )}
+            劇院模式
           </button>
-          <button onClick={onToggleSubRomaji} style={chipStyle(subRomaji)}>
-            拼
-          </button>
-        </div>
-
-        <button
-          onClick={onToggleTheater}
-          style={{
-            border: 'none',
-            cursor: 'pointer',
-            fontSize: 12,
-            fontWeight: 600,
-            padding: '7px 12px',
-            borderRadius: 7,
-            background: theaterMode ? ACCENT : theme.chipInactiveBg,
-            color: theaterMode ? '#fff' : theme.chipInactiveText,
-          }}
-        >
-          劇院模式
-        </button>
+        )}
 
         <button
           onClick={onToggleFullscreen}

@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum VideoStatus {
     New,
+    /// Accepted by `POST /api/videos` and persisted, but not yet picked up
+    /// by the single-worker queue (the queue-feature extension, dsd.md
+    /// §2/§8). Lets a submitted video show up in `GET /api/videos` in FIFO
+    /// order immediately, before the worker actually starts on it.
+    Queued,
     Downloading,
     DownloadFailed,
     Downloaded,
@@ -24,6 +29,8 @@ pub enum VideoStatus {
     Assembling,
     PipelineFailed,
     Ready,
+    /// The user cancelled a `Queued` item before the worker started on it.
+    Cancelled,
 }
 
 impl VideoStatus {
@@ -70,6 +77,18 @@ pub struct VideoMeta {
     pub last_stage: Option<Stage>,
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Whether yt-dlp's `categories` flagged this as a music video (queue
+    /// feature, dsd.md §2/§8). `#[serde(default)]` so old on-disk
+    /// `meta.json` files written before this field existed keep loading.
+    #[serde(default)]
+    pub is_music_video: bool,
+    /// The per-item ASR/generation options chosen when this video was
+    /// queued (`POST /api/videos`), consumed once by the auto-pipeline
+    /// step in `queue::process_download_job` and otherwise unused. `None`
+    /// means "use config/asr.py defaults", matching the pre-queue-feature
+    /// behavior. `#[serde(default)]` for the same on-disk-compat reason.
+    #[serde(default)]
+    pub queued_options: Option<crate::core::pipeline::PipelineOverrides>,
 }
 
 impl VideoMeta {
@@ -85,6 +104,8 @@ impl VideoMeta {
             last_stage: None,
             last_error: None,
             created_at: Utc::now(),
+            is_music_video: false,
+            queued_options: None,
         }
     }
 }
@@ -97,6 +118,7 @@ pub struct VideoSummary {
     pub channel: String,
     pub status: VideoStatus,
     pub duration_ms: u64,
+    pub is_music_video: bool,
 }
 
 impl From<&VideoMeta> for VideoSummary {
@@ -107,6 +129,7 @@ impl From<&VideoMeta> for VideoSummary {
             channel: m.channel.clone(),
             status: m.status,
             duration_ms: m.duration_ms,
+            is_music_video: m.is_music_video,
         }
     }
 }

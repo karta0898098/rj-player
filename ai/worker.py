@@ -13,7 +13,17 @@ Methods:
   generate_subtitles -> runs ASR -> tokenize -> romaji -> translate ->
                          assemble, emitting stage/progress events, then
                          exactly one `result` (canonical SubtitleDoc) or one
-                         `error` (optionally carrying a `partial` doc).
+                         `error` (optionally carrying a `partial` doc). Also
+                         emits one `partial_result` event right after romaji
+                         (before translate starts) carrying a snapshot doc
+                         with ja/tokens/romaji filled and zh_text null, so
+                         the Rust side can persist that work immediately
+                         instead of only on the terminal event.
+  retranslate        -> re-runs ONLY the translate stage against caller-
+                         supplied cues (ja_text/ja_tokens/romaji/timing
+                         already filled in, from an existing subtitles.json)
+                         -- no ASR. Same terminal `result`/`error` shape as
+                         generate_subtitles.
   shutdown           -> emits a result, then exits cleanly.
 
 Standalone self-test (no Rust side needed):
@@ -168,6 +178,25 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             )
         emit_fn({"id": req_id, "event": "stage", "stage": "romaji", "status": "done"})
 
+        # ---- Persist a pre-translate snapshot ----
+        # ASR (often the slowest, priciest stage -- large-v3 on a full song)
+        # plus tokenize/romaji are done at this point; translate is a separate
+        # network round-trip to an LLM that can retry for a while (rate
+        # limits, RECITATION blocks on song lyrics, etc.) before it even
+        # degrades gracefully. Emitting this now lets the Rust side persist
+        # ja_text/ja_tokens/romaji to subtitles.json immediately, so that work
+        # is never at risk regardless of how translate goes -- and gives
+        # run_retranslate (below) something to re-run translate against
+        # later without redoing ASR. `zh_text` is set to `None` on every cue
+        # first purely so this snapshot's shape matches the final doc (the
+        # Rust `Cue` struct requires the key present, even if null).
+        for cue in cues:
+            cue.setdefault("zh_text", None)
+        pretranslate_doc = assemble.assemble(
+            video_id, source_lang, target_lang, duration_ms, cues, False, False, source
+        )
+        emit_fn({"id": req_id, "event": "partial_result", "subtitles": pretranslate_doc})
+
         # ---- Translate (graceful degradation lives inside translate_segments) ----
         current_stage = "translate"
         degraded = False
@@ -207,6 +236,53 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 video_id, source_lang, target_lang, duration_ms, cues, source
             )
         emit_fn(error_event)
+        return None
+
+
+def run_retranslate(req_id, params: dict, emit_fn=protocol.emit) -> dict | None:
+    """Re-run ONLY the translate stage against already-computed cues.
+
+    Companion to `run_generate_subtitles`'s pre-translate snapshot (see its
+    `partial_result` event) -- lets a translate-only failure/degradation be
+    retried without redoing ASR (dsd.md §7's "don't throw away completed
+    work", extended to the common case, not just crash forensics). `cues`
+    comes in with `ja_text`/`ja_tokens`/`romaji`/`start_ms`/`end_ms` already
+    set (straight from the existing subtitles.json on the Rust side) --
+    those are passed through untouched; only `zh_text` is overwritten.
+    """
+    video_id = params.get("video_id")
+    source_lang = params.get("source_lang", "ja")
+    target_lang = params.get("target_lang", "zh-TW")
+    duration_ms = params.get("duration_ms")
+    source = params.get("source")
+    cues: list[dict] = params.get("cues") or []
+
+    try:
+        emit_fn({"id": req_id, "event": "stage", "stage": "translate", "status": "start"})
+        ja_texts = [c["ja_text"] for c in cues]
+        zh_texts, degraded = translate.translate_segments(
+            ja_texts,
+            target_lang,
+            on_progress=lambda pct: emit_fn(
+                {"id": req_id, "event": "progress", "stage": "translate", "pct": pct}
+            ),
+        )
+        for cue, zh in zip(cues, zh_texts):
+            cue["zh_text"] = zh
+        emit_fn({"id": req_id, "event": "stage", "stage": "translate", "status": "done"})
+
+        emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "start"})
+        doc = assemble.assemble(
+            video_id, source_lang, target_lang, duration_ms, cues, True, degraded, source
+        )
+        emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "done"})
+
+        emit_fn({"id": req_id, "event": "result", "subtitles": doc})
+        return doc
+
+    except Exception as e:  # noqa: BLE001 - top-level job guard, must not crash worker
+        protocol.log(f"[worker] retranslate failed: {e}")
+        emit_fn({"id": req_id, "event": "error", "stage": "translate", "message": str(e)})
         return None
 
 
@@ -285,6 +361,8 @@ def main() -> None:
             handle_ping(req_id)
         elif method == "generate_subtitles":
             run_generate_subtitles(req_id, params)
+        elif method == "retranslate":
+            run_retranslate(req_id, params)
         elif method == "shutdown":
             handle_shutdown(req_id)
             break

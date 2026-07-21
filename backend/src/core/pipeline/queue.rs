@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::core::domain::{JobEvent, Stage, VideoMeta, VideoStatus};
@@ -24,7 +24,7 @@ use crate::core::store::FsStore;
 /// (`http::subtitles::PipelineRequest`) can parse the `vad` object straight
 /// out of the `POST /api/videos/:id/pipeline` JSON body without a separate
 /// duplicate struct.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VadOverrides {
     /// Whether to run the Silero VAD pre-filter at all. `None`/`Some(true)` →
     /// VAD on (the default; skips instrumental/silence, tightens timings);
@@ -48,10 +48,12 @@ pub struct VadOverrides {
 /// `ai/pipeline/asr.py`'s `model.transcribe(...)`. Every field left `None`
 /// (or, for `vad`, left with every sub-field `None`) falls back to the
 /// config default (`whisper_model`/`whisper_temperature`) or to asr.py's own
-/// defaults (`vad`, `initial_prompt`). The auto-pipeline-after-download path
-/// (`process_download_job`) always sends `PipelineOverrides::default()`, so
-/// it keeps behaving exactly as before this feature existed.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// defaults (`vad`, `initial_prompt`). Also reused as `VideoMeta::queued_options`
+/// (the queue feature, `POST /api/videos`) so the auto-pipeline-after-download
+/// path in `process_download_job` uses whatever options the video was
+/// queued with, falling back to `PipelineOverrides::default()` when none
+/// were supplied.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineOverrides {
     #[serde(default)]
     pub whisper_model: Option<String>,
@@ -91,6 +93,13 @@ pub enum Job {
         force: bool,
         overrides: PipelineOverrides,
     },
+    /// Re-run ONLY the translate stage against an existing `subtitles.json`
+    /// (`POST /api/videos/:id/retranslate`) — no ASR. Routed through this
+    /// same single-worker queue (not called directly) so it can't overlap
+    /// with a `Download`/`Pipeline` job for the same (or any other) video,
+    /// same as everything else that touches the shared Python worker
+    /// process (dsd.md §8).
+    Retranslate { video_id: String },
 }
 
 /// Sending half handed out via `AppState` so HTTP handlers can enqueue work.
@@ -151,6 +160,9 @@ pub async fn run_worker(
                 )
                 .await;
             }
+            Job::Retranslate { video_id } => {
+                orchestrator::run_retranslate(&store, &hub, &rpc, &video_id).await;
+            }
         }
     }
     tracing::warn!("job queue worker stopped (channel closed)");
@@ -176,6 +188,21 @@ async fn process_download_job(
         .ok()
         .flatten()
         .unwrap_or_else(|| VideoMeta::new(video_id.clone(), url.clone()));
+
+    // The user cancelled this item (`POST /api/videos/:id/cancel`) while it
+    // was still sitting in the mpsc buffer waiting for the worker. There's
+    // no way to pull it back out of the channel, so treat `meta.json`'s
+    // `Cancelled` status as the authoritative "skip this" signal instead.
+    if meta.status == VideoStatus::Cancelled {
+        tracing::info!(%video_id, "download job was cancelled before it started; skipping");
+        hub.publish(
+            &video_id,
+            JobEvent::Status {
+                status: VideoStatus::Cancelled,
+            },
+        );
+        return;
+    }
 
     meta.status = VideoStatus::Downloading;
     meta.last_stage = Some(Stage::Download);
@@ -284,6 +311,11 @@ async fn process_download_job(
     // download and pipeline stay serialized end to end for one video
     // without a second enqueue round-trip (dsd.md §6.1, B2.6).
     if auto_pipeline {
+        // Use whatever generation options this item was queued with
+        // (`POST /api/videos`'s `is_music_video`/whisper/VAD/prompt
+        // choices), falling back to defaults for callers that never set
+        // `queued_options` (e.g. any future non-HTTP caller).
+        let overrides = meta.queued_options.clone().unwrap_or_default();
         orchestrator::run_pipeline(
             store,
             hub,
@@ -292,7 +324,7 @@ async fn process_download_job(
             whisper_model,
             whisper_temperature,
             false,
-            &PipelineOverrides::default(),
+            &overrides,
         )
         .await;
     }
@@ -316,5 +348,107 @@ async fn fail_job(
 async fn persist(store: &FsStore, meta: &VideoMeta) {
     if let Err(err) = store.save_meta(meta).await {
         tracing::error!(video_id = %meta.video_id, %err, "failed to persist meta.json");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::downloader::YtDlp;
+    use crate::core::pipeline::rpc::RpcClient;
+
+    /// A fresh throwaway data dir under the OS temp dir, cleaned up on drop
+    /// (mirrors `orchestrator::tests::TempDataDir`).
+    struct TempDataDir(std::path::PathBuf);
+
+    impl TempDataDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("rj-player-queue-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).expect("create temp data dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDataDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn process_download_job_skips_a_cancelled_item_before_downloading() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        // Deliberately-bogus binaries/paths: the test only passes if
+        // `process_download_job` returns before ever calling `ytdlp` or
+        // `rpc`, so invoking either of these would be the failure signal.
+        let ytdlp = YtDlp::new("rj-player-test-nonexistent-yt-dlp", "rj-player-test-nonexistent-ffmpeg", "best");
+        let rpc = RpcClient::new(
+            "rj-player-test-nonexistent-python",
+            "rj-player-test-nonexistent-worker.py",
+        );
+
+        let video_id = "cancelled01".to_string();
+        let mut meta = VideoMeta::new(video_id.clone(), "https://youtu.be/cancelled01".to_string());
+        meta.status = VideoStatus::Cancelled;
+        store.save_meta(&meta).await.unwrap();
+
+        process_download_job(
+            &store, &hub, &ytdlp, &rpc, "small", 0.0, video_id.clone(), meta.source_url.clone(), true,
+        )
+        .await;
+
+        let reloaded = store.load_meta(&video_id).await.unwrap().unwrap();
+        assert_eq!(reloaded.status, VideoStatus::Cancelled, "status must stay Cancelled, not flip to Downloading");
+    }
+
+    #[test]
+    fn video_meta_with_queued_options_round_trips_through_json() {
+        let mut meta = VideoMeta::new("roundtrip01".to_string(), "https://youtu.be/roundtrip01".to_string());
+        meta.is_music_video = true;
+        meta.queued_options = Some(PipelineOverrides {
+            whisper_model: Some("large-v3".to_string()),
+            whisper_temperature: Some(0.2),
+            initial_prompt: Some("test prompt".to_string()),
+            vad: VadOverrides {
+                enabled: Some(true),
+                threshold: Some(0.5),
+                min_silence_duration_ms: Some(500),
+                speech_pad_ms: Some(200),
+                max_speech_duration_s: Some(20.0),
+            },
+            reference_lyrics: None,
+        });
+
+        let json = serde_json::to_string(&meta).expect("serialize");
+        let restored: VideoMeta = serde_json::from_str(&json).expect("deserialize");
+
+        assert!(restored.is_music_video);
+        let options = restored.queued_options.expect("queued_options should round-trip");
+        assert_eq!(options.whisper_model.as_deref(), Some("large-v3"));
+        assert_eq!(options.vad.min_silence_duration_ms, Some(500));
+    }
+
+    #[test]
+    fn old_shape_meta_json_without_new_fields_still_deserializes() {
+        // Simulates a `meta.json` written by a version of this app before
+        // `is_music_video`/`queued_options` existed -- must keep loading
+        // thanks to `#[serde(default)]` on both fields.
+        let old_json = r#"{
+            "video_id": "legacy0001",
+            "source_url": "https://youtu.be/legacy0001",
+            "title": "Legacy Video",
+            "channel": "Legacy Channel",
+            "duration_ms": 1000,
+            "status": "ready",
+            "last_stage": null,
+            "last_error": null,
+            "created_at": "2024-01-01T00:00:00Z"
+        }"#;
+
+        let meta: VideoMeta = serde_json::from_str(old_json).expect("old-shape meta.json must still deserialize");
+        assert!(!meta.is_music_video);
+        assert!(meta.queued_options.is_none());
     }
 }

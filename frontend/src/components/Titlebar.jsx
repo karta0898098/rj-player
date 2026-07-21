@@ -13,6 +13,14 @@ export default function Titlebar({
   onUrlChange,
   onUrlSubmit,
   loading,
+  // Queue-feature add-on: a small toggle button next to the URL input that
+  // opens the anchored AddToQueuePopover (per-item ASR/generation options +
+  // music-MV checkbox), passed in by App the same way ControlBar's
+  // settingsSlot works.
+  optionsAnchorRef,
+  showOptions,
+  onToggleOptions,
+  optionsSlot,
 }) {
   return (
     <div
@@ -80,7 +88,11 @@ export default function Titlebar({
         </div>
       </div>
 
-      <form style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }} onSubmit={onUrlSubmit}>
+      <form
+        style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, position: 'relative' }}
+        onSubmit={onUrlSubmit}
+        ref={optionsAnchorRef}
+      >
         <div
           style={{
             background: theme.urlPillBg,
@@ -131,6 +143,29 @@ export default function Titlebar({
             }}
           />
         </div>
+        {onToggleOptions && (
+          <button
+            type="button"
+            onClick={onToggleOptions}
+            title="佇列選項（ASR 模型／音樂 MV）"
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 8,
+              border: 'none',
+              background: showOptions ? theme.chipInactiveBg : 'transparent',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: theme.textSecondary,
+              fontSize: 15,
+              flexShrink: 0,
+            }}
+          >
+            ⚙
+          </button>
+        )}
         <button
           type="submit"
           disabled={loading}
@@ -146,8 +181,9 @@ export default function Titlebar({
             opacity: loading ? 0.7 : 1,
           }}
         >
-          {loading ? '載入中…' : '載入'}
+          {loading ? '載入中…' : '加入佇列'}
         </button>
+        {showOptions && optionsSlot}
       </form>
     </div>
   );

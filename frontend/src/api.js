@@ -2,6 +2,8 @@
 // All calls use same-origin relative paths — the Vite dev server proxy
 // (vite.config.js) forwards /api and /media to http://127.0.0.1:8080.
 
+import { buildGenerationSettingsPayload } from './utils.js';
+
 async function parseErrorMessage(res) {
   try {
     const body = await res.json();
@@ -11,12 +13,44 @@ async function parseErrorMessage(res) {
   }
 }
 
-/** POST /api/videos — dsd.md §3.1. */
-export async function createVideo(url) {
+/**
+ * POST /api/videos — dsd.md §3.1, extended by the queue feature to carry
+ * per-item generation options + the music-MV flag chosen in the add-to-queue
+ * form. `options` is the same camelCase settings shape used by
+ * regeneratePipeline (see buildGenerationSettingsPayload in utils.js) so
+ * there's one shaping function for both call sites; `isMusicVideo` defaults
+ * to false. Omitting `options` entirely still works — every field is
+ * optional backend-side and falls back to config/asr.py defaults.
+ */
+export async function createVideo(url, options = {}, isMusicVideo = false) {
   const res = await fetch('/api/videos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, auto_pipeline: true }),
+    body: JSON.stringify({
+      url,
+      auto_pipeline: true,
+      is_music_video: isMusicVideo,
+      ...buildGenerationSettingsPayload(options),
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
+/**
+ * POST /api/videos/preview — metadata-only lookup (title/channel/duration/
+ * is_music) for a URL, with no side effects on the backend (no job
+ * enqueued, nothing persisted). Used by the add-to-queue form to show the
+ * auto-detected music-MV flag as the user pastes a URL, before they commit
+ * to queuing it. Safe to call repeatedly on a debounce.
+ */
+export async function previewVideo(url) {
+  const res = await fetch('/api/videos/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
   });
   if (!res.ok) {
     throw new Error(await parseErrorMessage(res));
@@ -31,6 +65,30 @@ export async function getVideo(id) {
     throw new Error(await parseErrorMessage(res));
   }
   return res.json();
+}
+
+/**
+ * GET /api/videos — the video library listing, doubling as the queue list
+ * (the queue feature derives pending/processing/recent buckets from this
+ * same call rather than a separate endpoint — see QueueList.jsx).
+ */
+export async function listVideos() {
+  const res = await fetch('/api/videos');
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
+/**
+ * POST /api/videos/:id/cancel — cancel a video that's still queued (not
+ * yet picked up by the worker). 400s for any other status.
+ */
+export async function cancelQueueItem(id) {
+  const res = await fetch(`/api/videos/${id}/cancel`, { method: 'POST' });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
 }
 
 /** WS URL for GET /api/videos/:id/events (dsd.md §3.2). */
@@ -61,6 +119,23 @@ export async function regeneratePipeline(id, settings = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ force: true, ...settings }),
   });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
+/**
+ * POST /api/videos/:id/retranslate — re-runs ONLY the translate stage
+ * against the video's existing subtitles.json (no ASR). Used by "只重新翻譯"
+ * to recover from a stuck/degraded translation (e.g. an LLM provider
+ * blocking output on song lyrics) without redoing the slow/expensive
+ * Whisper pass. 400s if there's no existing subtitles.json yet — the full
+ * pipeline needs to have run at least once first. Progress/completion is
+ * reported over the existing WS events endpoint, not in this response.
+ */
+export async function retranslateSubtitles(id) {
+  const res = await fetch(`/api/videos/${id}/retranslate`, { method: 'POST' });
   if (!res.ok) {
     throw new Error(await parseErrorMessage(res));
   }

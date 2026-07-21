@@ -1,9 +1,116 @@
 import { useState } from 'react';
 import { ACCENT } from '../theme.js';
+import GenerationOptionsForm from './GenerationOptionsForm.jsx';
 
 const SPEEDS = [0.5, 1, 1.25, 1.5, 2];
-const JP_COLOR_SWATCHES = ['#ffffff', '#ffe9a8', '#a8e6ff', '#b8f2c9'];
-const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3'];
+const COLOR_SWATCHES = ['#ffffff', '#ffe9a8', '#a8e6ff', '#b8f2c9'];
+
+// Small pill toggle — visually matches Titlebar.jsx's dark-mode switch, used
+// here as each subtitle layer's on/off control (moved in from ControlBar's
+// old 日/中/拼 chips, see the "字幕樣式" section below).
+function ToggleSwitch({ checked, onChange }) {
+  return (
+    <div
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      style={{
+        width: 34,
+        height: 19,
+        borderRadius: 10,
+        cursor: 'pointer',
+        flexShrink: 0,
+        background: checked ? ACCENT : 'rgba(127,127,127,0.35)',
+        position: 'relative',
+        transition: 'background 0.15s',
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: checked ? 17 : 2,
+          width: 15,
+          height: 15,
+          borderRadius: '50%',
+          background: '#fff',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+          transition: 'left 0.15s',
+        }}
+      />
+    </div>
+  );
+}
+
+// One subtitle layer's full control set: on/off + size/color/shadow, all
+// independently adjustable per layer (日/中/拼 each get their own instance)
+// rather than one shared size+color for all three.
+function SubtitleLayerPanel({ theme, label, badge, enabled, onToggleEnabled, style, onStyleChange }) {
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {label}
+          {badge}
+        </span>
+        <ToggleSwitch checked={enabled} onChange={onToggleEnabled} />
+      </div>
+      <div
+        style={{
+          opacity: enabled ? 1 : 0.4,
+          pointerEvents: enabled ? 'auto' : 'none',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 4 }}>大小</div>
+          <input
+            type="range"
+            min="0.7"
+            max="1.6"
+            step="0.05"
+            value={style.scale}
+            onChange={(e) => onStyleChange({ scale: Number(e.target.value) })}
+            style={{ width: '100%', accentColor: ACCENT }}
+          />
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 4 }}>顏色</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {COLOR_SWATCHES.map((c) => (
+              <button
+                key={c}
+                onClick={() => onStyleChange({ color: c })}
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: '50%',
+                  cursor: 'pointer',
+                  background: c,
+                  border: style.color === c ? `2px solid ${ACCENT}` : '1px solid rgba(0,0,0,0.15)',
+                }}
+              />
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 4 }}>陰影強度</div>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={style.shadow}
+            onChange={(e) => onStyleChange({ shadow: Number(e.target.value) })}
+            style={{ width: '100%', accentColor: ACCENT }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // "+0.5s" / "-1.2s" / "0s" — offset step is 100ms so seconds always land on
 // a single decimal place; drop the decimal entirely for whole seconds.
@@ -24,10 +131,24 @@ export default function SettingsPopover({
   dark,
   speed,
   onSpeedChange,
-  fontScale,
-  onFontScaleChange,
-  jpColor,
-  onJpColorChange,
+  // Per-layer on/off + appearance (moved in from ControlBar's old 日/中/拼
+  // chips, plus size/color now adjustable per layer instead of one shared
+  // fontScale/jpColor for all three — see SubtitleLayerPanel above).
+  subJP,
+  onToggleSubJP,
+  subCN,
+  onToggleSubCN,
+  subRomaji,
+  onToggleSubRomaji,
+  jpStyle,
+  onJpStyleChange,
+  cnStyle,
+  onCnStyleChange,
+  romajiStyle,
+  onRomajiStyleChange,
+  // dsd.md §7 translate_partial — minimal hint that some 中文 lines are
+  // missing translation; shown as a small badge next to the 中文 toggle.
+  translatePartial,
   subtitleOffsetMs,
   onSubtitleOffsetChange,
   subtitleBg,
@@ -54,22 +175,13 @@ export default function SettingsPopover({
   onRegenerateSubtitles,
   regenerateDisabled,
   regenerating,
+  onRetranslateSubtitles,
+  retranslateDisabled,
+  retranslating,
 }) {
   // Collapsed by default (README §版面結構 5 keeps this panel compact) — the
   // Whisper/VAD knobs are power-user territory most sessions won't touch.
   const [genSettingsOpen, setGenSettingsOpen] = useState(false);
-
-  const compactInputStyle = {
-    width: '100%',
-    boxSizing: 'border-box',
-    fontSize: 12,
-    padding: '6px 8px',
-    borderRadius: 7,
-    border: `1px solid ${theme.border}`,
-    background: theme.segmentBg,
-    color: theme.textPrimary,
-    fontFamily: 'inherit',
-  };
 
   return (
     <div style={{ position: 'absolute', bottom: 38, right: 0, zIndex: 5, width: 230 }}>
@@ -134,37 +246,49 @@ export default function SettingsPopover({
 
           <div style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>字幕樣式</div>
 
-          <div>
-            <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>字級大小</div>
-            <input
-              type="range"
-              min="0.7"
-              max="1.6"
-              step="0.05"
-              value={fontScale}
-              onChange={(e) => onFontScaleChange(Number(e.target.value))}
-              style={{ width: '100%', accentColor: ACCENT }}
+          <SubtitleLayerPanel
+            theme={theme}
+            label="日文"
+            enabled={subJP}
+            onToggleEnabled={onToggleSubJP}
+            style={jpStyle}
+            onStyleChange={onJpStyleChange}
+          />
+
+          <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 12 }}>
+            <SubtitleLayerPanel
+              theme={theme}
+              label="中文"
+              badge={
+                translatePartial && (
+                  <span
+                    title="部分中文翻譯缺失"
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: '#ffb020',
+                      display: 'inline-block',
+                    }}
+                  />
+                )
+              }
+              enabled={subCN}
+              onToggleEnabled={onToggleSubCN}
+              style={cnStyle}
+              onStyleChange={onCnStyleChange}
             />
           </div>
 
-          <div>
-            <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>日文字幕顏色</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {JP_COLOR_SWATCHES.map((c) => (
-                <button
-                  key={c}
-                  onClick={() => onJpColorChange(c)}
-                  style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: '50%',
-                    cursor: 'pointer',
-                    background: c,
-                    border: jpColor === c ? `2px solid ${ACCENT}` : '1px solid rgba(0,0,0,0.15)',
-                  }}
-                />
-              ))}
-            </div>
+          <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 12 }}>
+            <SubtitleLayerPanel
+              theme={theme}
+              label="羅馬拼音"
+              enabled={subRomaji}
+              onToggleEnabled={onToggleSubRomaji}
+              style={romajiStyle}
+              onStyleChange={onRomajiStyleChange}
+            />
           </div>
 
           <div>
@@ -270,182 +394,29 @@ export default function SettingsPopover({
             </button>
 
             {genSettingsOpen && (
-              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>模型 (whisper_model)</div>
-                  <select
-                    value={whisperModel}
-                    onChange={(e) => onWhisperModelChange(e.target.value)}
-                    style={compactInputStyle}
-                  >
-                    {WHISPER_MODELS.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                  <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
-                    large-v3 對歌聲辨識最準，但速度較慢
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <span style={{ fontSize: 11, color: theme.textTertiary }}>temperature</span>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace',
-                        fontWeight: 700,
-                        color: theme.textPrimary,
-                      }}
-                    >
-                      {whisperTemperature.toFixed(1)}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.1"
-                    value={whisperTemperature}
-                    onChange={(e) => onWhisperTemperatureChange(Number(e.target.value))}
-                    style={{ width: '100%', accentColor: ACCENT }}
-                  />
-                </div>
-
-                <div>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      cursor: 'pointer',
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: theme.textPrimary,
-                    }}
-                  >
-                    <span>使用 VAD 語音偵測</span>
-                    <input
-                      type="checkbox"
-                      checked={vadEnabled}
-                      onChange={(e) => onVadEnabledChange(e.target.checked)}
-                      style={{ width: 16, height: 16, accentColor: ACCENT, cursor: 'pointer' }}
-                    />
-                  </label>
-                  <div style={{ fontSize: 11, color: theme.textTertiary, marginTop: 4 }}>
-                    關閉可保留更多小聲／歌唱的字，但前奏等純音樂段可能出現幻覺字幕。關閉時下方 VAD 參數不生效。
-                  </div>
-                </div>
-
-                <div style={{ opacity: vadEnabled ? 1 : 0.4, pointerEvents: vadEnabled ? 'auto' : 'none' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <span style={{ fontSize: 11, color: theme.textTertiary }}>VAD threshold</span>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace',
-                        fontWeight: 700,
-                        color: theme.textPrimary,
-                      }}
-                    >
-                      {vadThreshold.toFixed(2)}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={vadThreshold}
-                    onChange={(e) => onVadThresholdChange(Number(e.target.value))}
-                    style={{ width: '100%', accentColor: ACCENT }}
-                  />
-                </div>
-
-                <div style={{ opacity: vadEnabled ? 1 : 0.4, pointerEvents: vadEnabled ? 'auto' : 'none' }}>
-                  <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>min_silence (ms)</div>
-                  <input
-                    type="number"
-                    min="0"
-                    max="2000"
-                    step="50"
-                    value={vadMinSilenceMs}
-                    onChange={(e) => onVadMinSilenceMsChange(Number(e.target.value))}
-                    style={compactInputStyle}
-                  />
-                </div>
-
-                <div style={{ opacity: vadEnabled ? 1 : 0.4, pointerEvents: vadEnabled ? 'auto' : 'none' }}>
-                  <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>speech_pad (ms)</div>
-                  <input
-                    type="number"
-                    min="0"
-                    max="1000"
-                    step="50"
-                    value={vadSpeechPadMs}
-                    onChange={(e) => onVadSpeechPadMsChange(Number(e.target.value))}
-                    style={compactInputStyle}
-                  />
-                </div>
-
-                <div style={{ opacity: vadEnabled ? 1 : 0.4, pointerEvents: vadEnabled ? 'auto' : 'none' }}>
-                  <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>max_speech (s)</div>
-                  <input
-                    type="number"
-                    min="5"
-                    max="60"
-                    step="1"
-                    value={vadMaxSpeechS}
-                    onChange={(e) => onVadMaxSpeechSChange(Number(e.target.value))}
-                    style={compactInputStyle}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>initial_prompt</div>
-                  <textarea
-                    rows={2}
-                    value={initialPrompt}
-                    onChange={(e) => onInitialPromptChange(e.target.value)}
-                    placeholder="可留空；給 Whisper 的提示（例如歌名/風格）"
-                    style={{ ...compactInputStyle, resize: 'vertical' }}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>
-                    正確歌詞（選填，一行一句）
-                  </div>
-                  <textarea
-                    rows={5}
-                    value={referenceLyrics}
-                    onChange={(e) => onReferenceLyricsChange(e.target.value)}
-                    placeholder="貼上這首歌的正確歌詞，一行一句。填了會用你的歌詞去對齊時間（文字保證正確）；留空則照常自動辨識。"
-                    style={{ ...compactInputStyle, resize: 'vertical' }}
-                  />
-                  <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
-                    有填＝forced alignment（文字用你的、只對時間，最準）；留空＝自動辨識。
-                  </div>
-                </div>
-
-                <button
-                  onClick={onResetGenerationSettings}
-                  style={{
-                    alignSelf: 'flex-start',
-                    border: 'none',
-                    background: 'none',
-                    cursor: 'pointer',
-                    padding: 0,
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: ACCENT,
-                    textDecoration: 'underline',
-                  }}
-                >
-                  回復預設
-                </button>
+              <div style={{ marginTop: 10 }}>
+                <GenerationOptionsForm
+                  theme={theme}
+                  whisperModel={whisperModel}
+                  onWhisperModelChange={onWhisperModelChange}
+                  whisperTemperature={whisperTemperature}
+                  onWhisperTemperatureChange={onWhisperTemperatureChange}
+                  initialPrompt={initialPrompt}
+                  onInitialPromptChange={onInitialPromptChange}
+                  referenceLyrics={referenceLyrics}
+                  onReferenceLyricsChange={onReferenceLyricsChange}
+                  vadEnabled={vadEnabled}
+                  onVadEnabledChange={onVadEnabledChange}
+                  vadThreshold={vadThreshold}
+                  onVadThresholdChange={onVadThresholdChange}
+                  vadMinSilenceMs={vadMinSilenceMs}
+                  onVadMinSilenceMsChange={onVadMinSilenceMsChange}
+                  vadSpeechPadMs={vadSpeechPadMs}
+                  onVadSpeechPadMsChange={onVadSpeechPadMsChange}
+                  vadMaxSpeechS={vadMaxSpeechS}
+                  onVadMaxSpeechSChange={onVadMaxSpeechSChange}
+                  onResetGenerationSettings={onResetGenerationSettings}
+                />
               </div>
             )}
           </div>
@@ -479,6 +450,29 @@ export default function SettingsPopover({
             </button>
             <div style={{ fontSize: 10, color: theme.textTertiary }}>
               字幕有缺漏或想換模型時可重跑（會重新辨識，需一點時間）
+            </div>
+
+            <button
+              onClick={onRetranslateSubtitles}
+              disabled={retranslateDisabled}
+              style={{
+                border: `1px solid ${retranslateDisabled ? 'transparent' : theme.border}`,
+                cursor: retranslateDisabled ? 'default' : 'pointer',
+                fontSize: 11,
+                fontWeight: 700,
+                padding: '7px 12px',
+                borderRadius: 999,
+                background: theme.segmentBg,
+                color: retranslateDisabled ? theme.textTertiary : theme.textPrimary,
+                opacity: retranslateDisabled ? 0.6 : 1,
+                width: '100%',
+                marginTop: 4,
+              }}
+            >
+              {retranslating ? '重新翻譯中…' : '只重新翻譯'}
+            </button>
+            <div style={{ fontSize: 10, color: theme.textTertiary }}>
+              只翻譯有問題的句子，不重新辨識語音（比重新產生快很多）
             </div>
           </div>
 

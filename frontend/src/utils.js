@@ -20,6 +20,7 @@ export const STAGE_LABELS = {
 // `status`/`done` events — no pct). Phase 3 (B3.4) falls back to these when
 // no `progress` event for the current stage has arrived yet.
 export const PIPELINE_STATUS_LABELS = {
+  queued: '排隊中',
   downloading: '下載中',
   downloaded: '準備字幕中',
   transcribing: '辨識中',
@@ -29,12 +30,16 @@ export const PIPELINE_STATUS_LABELS = {
   ready: '字幕就緒',
   pipeline_failed: '字幕處理失敗',
   download_failed: '下載失敗',
+  cancelled: '已取消',
 };
 
 // dsd.md §5.3 `VideoStatus` values the AI pipeline can be in after a video
 // has finished downloading (i.e. excludes the terminal `ready`/`*_failed`
 // states) — used to decide whether the B3.4 "in progress" pill should show.
+// `queued` (the queue feature) is included too: an item waiting for the
+// single worker is just as much "in progress" as one actively downloading.
 export const PIPELINE_ACTIVE_STATUSES = new Set([
+  'queued',
   'downloading',
   'downloaded',
   'transcribing',
@@ -115,6 +120,18 @@ export const GENERATION_SETTINGS_DEFAULTS = {
   vadMaxSpeechS: 15,
 };
 
+// Applied on top of GENERATION_SETTINGS_DEFAULTS in the add-to-queue form
+// when a video is auto-detected (or manually flagged) as a music MV: hints
+// Whisper this is sung lyrics rather than speech, and loosens two VAD knobs
+// since sung phrases have longer natural pauses and often run longer before
+// a break than a spoken sentence. threshold/speech_pad are left unchanged --
+// no evidence a different value helps for either case.
+export const MUSIC_GENERATION_PRESET = {
+  initialPrompt: 'これは音楽ビデオです。日本語の歌詞をできるだけ正確に書き起こしてください。',
+  vadMinSilenceMs: 500,
+  vadMaxSpeechS: 20,
+};
+
 const GENERATION_SETTINGS_STORAGE_KEY = 'rj-player.generationSettings';
 
 // Loads persisted generation settings from localStorage. Tolerant of a
@@ -167,4 +184,32 @@ export function buildGenerationSettingsPayload(settings) {
       max_speech_duration_s: settings.vadMaxSpeechS,
     },
   };
+}
+
+// ---- playlist (queue-feature add-on) --------------------------------------
+// Ordered list of video_ids the user has added via "加入佇列", independent of
+// each video's processing status -- lets you browse/reorder/switch between
+// everything you've queued this way, unlike the transient Queue strip which
+// only shows items still in flight. Persisted to localStorage (same pattern
+// as generation settings) so manual reordering survives a reload; tolerant
+// of a missing/corrupt value the same way loadGenerationSettings is.
+const PLAYLIST_STORAGE_KEY = 'rj-player.playlist';
+
+export function loadPlaylist() {
+  try {
+    const raw = localStorage.getItem(PLAYLIST_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function savePlaylist(videoIds) {
+  try {
+    localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(videoIds));
+  } catch {
+    // ignore — storage unavailable or full
+  }
 }

@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         store,
         job_tx,
         event_hub,
+        ytdlp: ytdlp.clone(),
     });
 
     let app = http::router::build_router(state.clone());

@@ -10,17 +10,35 @@ Not the real Phase 2 AI service - do not extend this into one.
 Usage: stub_worker.py [mode]
   mode=normal (default)     ping -> pong; generate_subtitles -> stage/progress
                              events then a result with one canned cue.
+                             retranslate -> stage/progress then a result
+                             reusing the caller's cues, zh_text overwritten.
   mode=crash_before_reply   exit (no output) right after reading a request,
                              simulating a worker crash mid-job.
   mode=malformed            write one line of invalid JSON, then exit.
+  mode=slow_translate       generate_subtitles emits a partial_result
+                             (zh_text null) then sleeps briefly before the
+                             final result, so a test can observe the
+                             pre-translate snapshot getting persisted before
+                             the run finishes.
 """
 import json
 import sys
+import time
 
 
 def emit(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+
+
+CANNED_CUE = {
+    "id": 0,
+    "start_ms": 0,
+    "end_ms": 2500,
+    "ja_text": "こんにちは",
+    "ja_tokens": [{"t": "こんにちは"}],
+    "romaji": "konnichiwa",
+}
 
 
 def main():
@@ -57,6 +75,22 @@ def main():
 
             emit({"id": req_id, "event": "stage", "stage": "asr", "status": "start"})
             emit({"id": req_id, "event": "progress", "stage": "asr", "pct": 50})
+
+            if mode == "slow_translate":
+                emit({
+                    "id": req_id,
+                    "event": "partial_result",
+                    "subtitles": {
+                        "version": 1,
+                        "video_id": video_id,
+                        "language_source": "ja",
+                        "target_lang": "zh-TW",
+                        "duration_ms": 2500,
+                        "cues": [{**CANNED_CUE, "zh_text": None}],
+                    },
+                })
+                time.sleep(0.2)
+
             emit({"id": req_id, "event": "stage", "stage": "assemble", "status": "start"})
             emit({
                 "id": req_id,
@@ -67,17 +101,29 @@ def main():
                     "language_source": "ja",
                     "target_lang": "zh-TW",
                     "duration_ms": 2500,
-                    "cues": [
-                        {
-                            "id": 0,
-                            "start_ms": 0,
-                            "end_ms": 2500,
-                            "ja_text": "こんにちは",
-                            "ja_tokens": [{"t": "こんにちは"}],
-                            "romaji": "konnichiwa",
-                            "zh_text": "你好",
-                        }
-                    ],
+                    "cues": [{**CANNED_CUE, "zh_text": "你好"}],
+                },
+            })
+            continue
+
+        if method == "retranslate":
+            params = req.get("params", {})
+            video_id = params.get("video_id", "unknown")
+            cues = params.get("cues", [])
+
+            emit({"id": req_id, "event": "stage", "stage": "translate", "status": "start"})
+            emit({"id": req_id, "event": "progress", "stage": "translate", "pct": 100})
+            emit({"id": req_id, "event": "stage", "stage": "assemble", "status": "start"})
+            emit({
+                "id": req_id,
+                "event": "result",
+                "subtitles": {
+                    "version": 1,
+                    "video_id": video_id,
+                    "language_source": params.get("source_lang", "ja"),
+                    "target_lang": params.get("target_lang", "zh-TW"),
+                    "duration_ms": params.get("duration_ms", 0),
+                    "cues": [{**c, "zh_text": f"STUB:{c.get('ja_text', '')}"} for c in cues],
                 },
             })
             continue

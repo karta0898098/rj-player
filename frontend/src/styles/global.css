@@ -43,9 +43,32 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* SubtitleList.jsx row hover — subtle, theme-neutral overlay. Inline styles
-   (used for the active-row accent tint) always win over this class rule, so
-   it never fights the active-cue highlight. */
+/* Row hover for SubtitleList.jsx and PlaylistPanel.jsx (both hosted as
+   SidebarPanel.jsx tabs) — subtle, theme-neutral overlay. Inline styles
+   (used for each's own active-row accent tint) always win over this class
+   rule, so it never fights either's active/highlighted-row treatment. */
 .subtitle-row:hover {
   background: rgba(127, 127, 127, 0.12);
+}
+
+/* Scroll container for SubtitleList.jsx and PlaylistPanel.jsx — an
+   always-visible thin scrollbar (rather than the OS default overlay one,
+   which macOS hides until you scroll) so it's obvious the list is manually
+   scrollable and not just auto-following playback. */
+.subtitle-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(127, 127, 127, 0.45) transparent;
+}
+.subtitle-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.subtitle-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.subtitle-scroll::-webkit-scrollbar-thumb {
+  background: rgba(127, 127, 127, 0.45);
+  border-radius: 4px;
+}
+.subtitle-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(127, 127, 127, 0.65);
 }

@@ -129,7 +129,25 @@ class GeminiTranslator(Translator):
                         temperature=0,
                     ),
                 )
-                translations = _parse_json_array(resp.text or "")
+                raw_text = resp.text or ""
+                if not raw_text.strip():
+                    # Empty text usually isn't a transient hiccup — it's Gemini
+                    # withholding output entirely (finish_reason RECITATION is
+                    # common here specifically because these are song lyrics:
+                    # the model's copyright/recitation check blocks near-verbatim
+                    # reproduction of training-data lyrics). Surface *why* so
+                    # retries log something diagnosable instead of the opaque
+                    # "Expecting value: line 1 column 1 (char 0)" JSON error.
+                    reason = None
+                    try:
+                        if resp.candidates:
+                            reason = resp.candidates[0].finish_reason
+                        if reason is None and resp.prompt_feedback:
+                            reason = resp.prompt_feedback.block_reason
+                    except Exception:  # noqa: BLE001 - best-effort diagnostics only
+                        pass
+                    raise ValueError(f"Gemini returned no text (finish_reason={reason})")
+                translations = _parse_json_array(raw_text)
                 if len(translations) != len(texts):
                     raise ValueError(
                         f"translation count mismatch: got {len(translations)}, "
