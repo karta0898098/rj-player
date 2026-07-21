@@ -10,6 +10,8 @@ import SubtitleOverlay from './SubtitleOverlay.jsx';
 export default function VideoStage({
   theme,
   theaterMode,
+  containerRef,
+  isFullscreen,
   videoRef,
   videoSrc,
   isPlaying,
@@ -42,13 +44,23 @@ export default function VideoStage({
 }) {
   return (
     <div
+      ref={containerRef}
       style={{
-        margin: theaterMode ? '12px 0 0' : '12px 20px 0',
+        // Fullscreen target (README change #4): App.jsx calls
+        // containerRef.current.requestFullscreen() on this element — NOT the
+        // bare <video> — so the ruby subtitle overlay stays visible in
+        // fullscreen. When fullscreen, drop the margin/rounding/aspect-ratio
+        // so this div fills the whole screen edge-to-edge; the <video>
+        // inside already uses width/height:100% + objectFit:contain (below),
+        // so it letterboxes correctly at any screen aspect ratio.
+        margin: isFullscreen ? 0 : theaterMode ? '12px 0 0' : '12px 20px 0',
         position: 'relative',
-        borderRadius: theaterMode ? 0 : 12,
+        borderRadius: isFullscreen ? 0 : theaterMode ? 0 : 12,
         overflow: 'hidden',
         background: '#0b0b0c',
-        aspectRatio: '16/9',
+        aspectRatio: isFullscreen ? 'auto' : '16/9',
+        width: isFullscreen ? '100%' : undefined,
+        height: isFullscreen ? '100%' : undefined,
       }}
     >
       {videoSrc ? (

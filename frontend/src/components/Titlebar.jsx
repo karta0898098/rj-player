@@ -1,13 +1,14 @@
-import MacTrafficLights from './MacTrafficLights.jsx';
 import { ACCENT } from '../theme.js';
 
-// Titlebar — README §版面結構 1. macOS traffic lights, app name (13px/700),
-// dark-mode pill toggle, YouTube URL pill input (280px w/ small red icon),
-// red "載入" button.
+// Titlebar — README §版面結構 1. Video title (14px/700, ellipsized — see
+// videoTitle below), dark-mode pill toggle, YouTube URL pill input (280px w/
+// small red icon), red "載入" button. macOS traffic lights were removed
+// (MacTrafficLights.jsx is kept on disk, unused).
 export default function Titlebar({
   theme,
   darkMode,
   onToggleDark,
+  videoTitle,
   urlInput,
   onUrlChange,
   onUrlSubmit,
@@ -24,22 +25,23 @@ export default function Titlebar({
         flexShrink: 0,
       }}
     >
-      <MacTrafficLights />
       <div
         style={{
-          color: theme.textPrimary,
-          fontSize: 13,
+          color: videoTitle ? theme.textPrimary : theme.textTertiary,
+          fontSize: 14,
           fontWeight: 700,
+          flex: 1,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
-          flexShrink: 0,
         }}
       >
-        YouTube 字幕播放器
+        {videoTitle || '尚未載入影片'}
       </div>
-      <div style={{ flex: 1 }} />
 
       <div
-        style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flexShrink: 0 }}
         onClick={onToggleDark}
       >
         <span
@@ -78,7 +80,7 @@ export default function Titlebar({
         </div>
       </div>
 
-      <form style={{ display: 'flex', alignItems: 'center', gap: 8 }} onSubmit={onUrlSubmit}>
+      <form style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }} onSubmit={onUrlSubmit}>
         <div
           style={{
             background: theme.urlPillBg,

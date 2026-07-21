@@ -10,12 +10,21 @@ body,
 
 body {
   margin: 0;
-  /* Backdrop behind the floating "macOS window" — matches the design
-     handoff prototype's preview canvas; not affected by in-app dark mode
-     (only the window chrome itself is themed, per README §Interactions). */
-  background: #eceef1;
+  /* Dark fallback behind the <AmbientBackground> layer (which paints the real
+     themed aurora/Ambilight backdrop) — avoids a white flash on first paint. */
+  background: #08080c;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Slow, subtle drift for the ambient aurora blobs (AmbientBackground.jsx). */
+@keyframes ambientDrift {
+  from {
+    transform: translate(0, 0) scale(1);
+  }
+  to {
+    transform: translate(4%, -5%) scale(1.12);
+  }
 }
 
 a {
@@ -32,4 +41,11 @@ input {
 
 button {
   -webkit-tap-highlight-color: transparent;
+}
+
+/* SubtitleList.jsx row hover — subtle, theme-neutral overlay. Inline styles
+   (used for the active-row accent tint) always win over this class rule, so
+   it never fights the active-cue highlight. */
+.subtitle-row:hover {
+  background: rgba(127, 127, 127, 0.12);
 }

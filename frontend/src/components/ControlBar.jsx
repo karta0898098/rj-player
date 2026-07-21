@@ -26,6 +26,8 @@ export default function ControlBar({
   translatePartial,
   theaterMode,
   onToggleTheater,
+  isFullscreen,
+  onToggleFullscreen,
   showSettings,
   onToggleSettings,
   settingsAnchorRef,
@@ -155,6 +157,23 @@ export default function ControlBar({
           }}
         >
           劇院模式
+        </button>
+
+        <button
+          onClick={onToggleFullscreen}
+          title={isFullscreen ? '離開全螢幕' : '全螢幕'}
+          style={{
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: 12,
+            fontWeight: 600,
+            padding: '7px 12px',
+            borderRadius: 7,
+            background: isFullscreen ? ACCENT : theme.chipInactiveBg,
+            color: isFullscreen ? '#fff' : theme.chipInactiveText,
+          }}
+        >
+          {isFullscreen ? '⤢ 離開全螢幕' : '⛶ 全螢幕'}
         </button>
 
         <div style={{ position: 'relative' }} ref={settingsAnchorRef}>

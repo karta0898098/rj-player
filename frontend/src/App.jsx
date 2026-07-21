@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import AmbientBackground from './components/AmbientBackground.jsx';
 import Titlebar from './components/Titlebar.jsx';
 import VideoInfo from './components/VideoInfo.jsx';
 import VideoStage from './components/VideoStage.jsx';
 import ControlBar from './components/ControlBar.jsx';
+import SubtitleList from './components/SubtitleList.jsx';
 import SettingsPopover from './components/SettingsPopover.jsx';
 import { getTheme } from './theme.js';
 import {
@@ -15,9 +17,24 @@ import {
 } from './utils.js';
 import { createVideo, getVideo, getSubtitles, videoEventsUrl, mediaUrl, regeneratePipeline } from './api.js';
 
+// ---- fullscreen helpers (module-level; guard for browsers without the
+// unprefixed API — Safari historically only exposes the webkit-prefixed
+// forms for arbitrary elements) --------------------------------------------
+function currentFullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function requestFullscreenOn(el) {
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (fn) fn.call(el);
+}
+function exitFullscreen() {
+  const fn = document.exitFullscreen || document.webkitExitFullscreen;
+  if (fn) fn.call(document);
+}
+
 export default function App() {
   // ---- appearance ---------------------------------------------------
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(true); // dark by default
   const [theaterMode, setTheaterMode] = useState(false);
   const theme = getTheme(darkMode);
 
@@ -39,6 +56,11 @@ export default function App() {
 
   // ---- playback ---------------------------------------------------
   const videoRef = useRef(null);
+  // VideoStage's outer 16:9 container (video + SubtitleOverlay) — the
+  // fullscreen target (README change #4), so the ruby subtitle overlay is
+  // included in fullscreen instead of just the bare <video>.
+  const stageContainerRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -96,6 +118,28 @@ export default function App() {
     }
   }
   useEffect(() => () => closeWs(), []);
+
+  // Titlebar now shows the loaded video's title (README change #2) — keep
+  // the browser tab title in sync with it too.
+  useEffect(() => {
+    document.title = videoTitle || 'rj-player';
+  }, [videoTitle]);
+
+  // Track fullscreen state (README change #4) so ControlBar's button can
+  // swap its icon/label and so we know which way to toggle on click. Uses a
+  // document-level listener (not element-level) since exiting via Esc or a
+  // browser chrome control doesn't go through our own handler.
+  useEffect(() => {
+    function onFullscreenChange() {
+      setIsFullscreen(Boolean(currentFullscreenElement()));
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+    };
+  }, []);
 
   // Persist generation settings to localStorage on every change (including
   // the initial mount, which harmlessly re-saves whatever was just loaded).
@@ -422,6 +466,30 @@ export default function App() {
     setVolume((prev) => (prev > 0 ? 0 : lastVolumeRef.current || 70));
   }
 
+  // Fullscreens/exits VideoStage's outer container (stageContainerRef), NOT
+  // the bare <video> — see the module-level helpers above and README change
+  // #4. No-ops (rather than throwing) on browsers without any Fullscreen API.
+  function toggleFullscreen() {
+    const el = stageContainerRef.current;
+    if (!el) return;
+    if (currentFullscreenElement()) {
+      exitFullscreen();
+    } else {
+      requestFullscreenOn(el);
+    }
+  }
+
+  // SubtitleList row click (README change #3) — seeks the same way ProgressTrack's
+  // onSeek does: set <video>.currentTime directly, then setCurrentTime so the
+  // UI (progress bar, active-cue highlight, overlay) updates immediately
+  // instead of waiting for the next `timeupdate`/rAF tick.
+  function seekToCue(cue) {
+    const t = cue.start_ms / 1000;
+    const v = videoRef.current;
+    if (v) v.currentTime = t;
+    setCurrentTime(t);
+  }
+
   // Smooth progress bar while playing (rAF, per dsd.md §6.2's preference for
   // rAF over the coarser `timeupdate` event ~4/s). `currentTime` is also
   // what drives SubtitleOverlay's cue binary-search (B3.1) — it reads this
@@ -440,15 +508,19 @@ export default function App() {
   const timeLabel = `${formatTime(currentTime)} / ${formatTime(duration)}`;
 
   return (
-    <div style={{ width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', boxSizing: 'border-box' }}>
+    <>
+      <AmbientBackground dark={darkMode} videoSrc={videoSrc} videoRef={videoRef} />
+      <div style={{ position: 'relative', zIndex: 1, width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', boxSizing: 'border-box' }}>
       <div
         style={{
           background: theme.winBg,
-          width: theaterMode ? 1280 : 1040,
+          width: theaterMode ? 1440 : 1320,
           maxWidth: '100%',
           borderRadius: 20,
           overflow: 'hidden',
-          boxShadow: '0 0 0 1px rgba(0,0,0,0.12),0 24px 60px rgba(0,0,0,0.28)',
+          boxShadow: darkMode
+            ? '0 0 0 1px rgba(255,255,255,0.06), 0 30px 90px rgba(0,0,0,0.6), 0 0 140px rgba(224,69,63,0.09)'
+            : '0 0 0 1px rgba(0,0,0,0.08), 0 24px 60px rgba(0,0,0,0.22)',
           display: 'flex',
           flexDirection: 'column',
           fontFamily: "-apple-system,BlinkMacSystemFont,'SF Pro','Helvetica Neue',sans-serif",
@@ -458,111 +530,136 @@ export default function App() {
           theme={theme}
           darkMode={darkMode}
           onToggleDark={() => setDarkMode((d) => !d)}
+          videoTitle={videoTitle}
           urlInput={urlInput}
           onUrlChange={setUrlInput}
           onUrlSubmit={handleUrlSubmit}
           loading={loadStatus === 'connecting' || loadStatus === 'downloading'}
         />
 
-        {!theaterMode && videoTitle && <VideoInfo theme={theme} videoTitle={videoTitle} channelName={channelName} />}
+        {/* Two-column body (README change #3): LEFT = channel row + video +
+            controls (unchanged behavior), RIGHT = the clickable subtitle-list
+            sidebar. minHeight:0 lets the sidebar's own overflowY:auto scroll
+            within the row's stretched height instead of growing it. */}
+        <div style={{ display: 'flex', minHeight: 0 }}>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            {!theaterMode && channelName && <VideoInfo theme={theme} channelName={channelName} />}
 
-        <VideoStage
-          theme={theme}
-          theaterMode={theaterMode}
-          videoRef={videoRef}
-          videoSrc={videoSrc}
-          isPlaying={isPlaying}
-          onTogglePlay={togglePlay}
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
-          onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
-          onLoadedMetadata={(e) => {
-            if (Number.isFinite(e.target.duration)) setDuration(e.target.duration);
-          }}
-          onEnded={() => setIsPlaying(false)}
-          loadStatus={loadStatus}
-          downloadPct={downloadPct}
-          stageLabel={stageLabel}
-          errorMessage={errorMessage}
-          currentTime={currentTime}
-          cues={cues}
-          subJP={subJP}
-          subCN={subCN}
-          subRomaji={subRomaji}
-          fontScale={fontScale}
-          jpColor={jpColor}
-          subtitleOffsetMs={subtitleOffsetMs}
-          subtitleBg={subtitleBg}
-          subtitleStatus={subtitleStatus}
-          subtitleStage={subtitleStage}
-          subtitlePct={subtitlePct}
-          subtitleError={subtitleError}
-        />
-
-        <ControlBar
-          theme={theme}
-          currentTime={currentTime}
-          duration={duration}
-          onSeek={onSeek}
-          disabled={loadStatus !== 'downloaded'}
-          isPlaying={isPlaying}
-          onTogglePlay={togglePlay}
-          timeLabel={timeLabel}
-          volume={volume}
-          onVolumeChange={onVolumeChange}
-          onToggleMute={toggleMute}
-          subJP={subJP}
-          subCN={subCN}
-          subRomaji={subRomaji}
-          onToggleSubJP={() => setSubJP((s) => !s)}
-          onToggleSubCN={() => setSubCN((s) => !s)}
-          onToggleSubRomaji={() => setSubRomaji((s) => !s)}
-          translatePartial={translatePartial}
-          theaterMode={theaterMode}
-          onToggleTheater={() => setTheaterMode((s) => !s)}
-          showSettings={showSettings}
-          onToggleSettings={() => setShowSettings((s) => !s)}
-          settingsAnchorRef={settingsAnchorRef}
-          settingsSlot={
-            <SettingsPopover
+            <VideoStage
               theme={theme}
-              dark={darkMode}
-              speed={speed}
-              onSpeedChange={setSpeed}
+              theaterMode={theaterMode}
+              containerRef={stageContainerRef}
+              isFullscreen={isFullscreen}
+              videoRef={videoRef}
+              videoSrc={videoSrc}
+              isPlaying={isPlaying}
+              onTogglePlay={togglePlay}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
+              onLoadedMetadata={(e) => {
+                if (Number.isFinite(e.target.duration)) setDuration(e.target.duration);
+              }}
+              onEnded={() => setIsPlaying(false)}
+              loadStatus={loadStatus}
+              downloadPct={downloadPct}
+              stageLabel={stageLabel}
+              errorMessage={errorMessage}
+              currentTime={currentTime}
+              cues={cues}
+              subJP={subJP}
+              subCN={subCN}
+              subRomaji={subRomaji}
               fontScale={fontScale}
-              onFontScaleChange={setFontScale}
               jpColor={jpColor}
-              onJpColorChange={setJpColor}
               subtitleOffsetMs={subtitleOffsetMs}
-              onSubtitleOffsetChange={setSubtitleOffsetMs}
               subtitleBg={subtitleBg}
-              onSubtitleBgChange={setSubtitleBg}
-              whisperModel={whisperModel}
-              onWhisperModelChange={setWhisperModel}
-              whisperTemperature={whisperTemperature}
-              onWhisperTemperatureChange={setWhisperTemperature}
-              initialPrompt={initialPrompt}
-              onInitialPromptChange={setInitialPrompt}
-              referenceLyrics={referenceLyrics}
-              onReferenceLyricsChange={setReferenceLyrics}
-              vadEnabled={vadEnabled}
-              onVadEnabledChange={setVadEnabled}
-              vadThreshold={vadThreshold}
-              onVadThresholdChange={setVadThreshold}
-              vadMinSilenceMs={vadMinSilenceMs}
-              onVadMinSilenceMsChange={setVadMinSilenceMs}
-              vadSpeechPadMs={vadSpeechPadMs}
-              onVadSpeechPadMsChange={setVadSpeechPadMs}
-              vadMaxSpeechS={vadMaxSpeechS}
-              onVadMaxSpeechSChange={setVadMaxSpeechS}
-              onResetGenerationSettings={resetGenerationSettings}
-              onRegenerateSubtitles={regenerateSubtitles}
-              regenerateDisabled={!videoId || PIPELINE_ACTIVE_STATUSES.has(subtitleStatus)}
-              regenerating={PIPELINE_ACTIVE_STATUSES.has(subtitleStatus)}
+              subtitleStatus={subtitleStatus}
+              subtitleStage={subtitleStage}
+              subtitlePct={subtitlePct}
+              subtitleError={subtitleError}
             />
-          }
-        />
+
+            <ControlBar
+              theme={theme}
+              currentTime={currentTime}
+              duration={duration}
+              onSeek={onSeek}
+              disabled={loadStatus !== 'downloaded'}
+              isPlaying={isPlaying}
+              onTogglePlay={togglePlay}
+              timeLabel={timeLabel}
+              volume={volume}
+              onVolumeChange={onVolumeChange}
+              onToggleMute={toggleMute}
+              subJP={subJP}
+              subCN={subCN}
+              subRomaji={subRomaji}
+              onToggleSubJP={() => setSubJP((s) => !s)}
+              onToggleSubCN={() => setSubCN((s) => !s)}
+              onToggleSubRomaji={() => setSubRomaji((s) => !s)}
+              translatePartial={translatePartial}
+              theaterMode={theaterMode}
+              onToggleTheater={() => setTheaterMode((s) => !s)}
+              isFullscreen={isFullscreen}
+              onToggleFullscreen={toggleFullscreen}
+              showSettings={showSettings}
+              onToggleSettings={() => setShowSettings((s) => !s)}
+              settingsAnchorRef={settingsAnchorRef}
+              settingsSlot={
+                <SettingsPopover
+                  theme={theme}
+                  dark={darkMode}
+                  speed={speed}
+                  onSpeedChange={setSpeed}
+                  fontScale={fontScale}
+                  onFontScaleChange={setFontScale}
+                  jpColor={jpColor}
+                  onJpColorChange={setJpColor}
+                  subtitleOffsetMs={subtitleOffsetMs}
+                  onSubtitleOffsetChange={setSubtitleOffsetMs}
+                  subtitleBg={subtitleBg}
+                  onSubtitleBgChange={setSubtitleBg}
+                  whisperModel={whisperModel}
+                  onWhisperModelChange={setWhisperModel}
+                  whisperTemperature={whisperTemperature}
+                  onWhisperTemperatureChange={setWhisperTemperature}
+                  initialPrompt={initialPrompt}
+                  onInitialPromptChange={setInitialPrompt}
+                  referenceLyrics={referenceLyrics}
+                  onReferenceLyricsChange={setReferenceLyrics}
+                  vadEnabled={vadEnabled}
+                  onVadEnabledChange={setVadEnabled}
+                  vadThreshold={vadThreshold}
+                  onVadThresholdChange={setVadThreshold}
+                  vadMinSilenceMs={vadMinSilenceMs}
+                  onVadMinSilenceMsChange={setVadMinSilenceMs}
+                  vadSpeechPadMs={vadSpeechPadMs}
+                  onVadSpeechPadMsChange={setVadSpeechPadMs}
+                  vadMaxSpeechS={vadMaxSpeechS}
+                  onVadMaxSpeechSChange={setVadMaxSpeechS}
+                  onResetGenerationSettings={resetGenerationSettings}
+                  onRegenerateSubtitles={regenerateSubtitles}
+                  regenerateDisabled={!videoId || PIPELINE_ACTIVE_STATUSES.has(subtitleStatus)}
+                  regenerating={PIPELINE_ACTIVE_STATUSES.has(subtitleStatus)}
+                />
+              }
+            />
+          </div>
+
+          <SubtitleList
+            theme={theme}
+            cues={cues}
+            currentTime={currentTime}
+            subtitleOffsetMs={subtitleOffsetMs}
+            subtitleStatus={subtitleStatus}
+            subtitleStage={subtitleStage}
+            subtitlePct={subtitlePct}
+            onSeekToCue={seekToCue}
+          />
+        </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
