@@ -3,114 +3,9 @@ import { ACCENT } from '../theme.js';
 import GenerationOptionsForm from './GenerationOptionsForm.jsx';
 
 const SPEEDS = [0.5, 1, 1.25, 1.5, 2];
-const COLOR_SWATCHES = ['#ffffff', '#ffe9a8', '#a8e6ff', '#b8f2c9'];
-
-// Small pill toggle — visually matches Titlebar.jsx's dark-mode switch, used
-// here as each subtitle layer's on/off control (moved in from ControlBar's
-// old 日/中/拼 chips, see the "字幕樣式" section below).
-function ToggleSwitch({ checked, onChange }) {
-  return (
-    <div
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      style={{
-        width: 34,
-        height: 19,
-        borderRadius: 10,
-        cursor: 'pointer',
-        flexShrink: 0,
-        background: checked ? ACCENT : 'rgba(127,127,127,0.35)',
-        position: 'relative',
-        transition: 'background 0.15s',
-      }}
-    >
-      <div
-        style={{
-          position: 'absolute',
-          top: 2,
-          left: checked ? 17 : 2,
-          width: 15,
-          height: 15,
-          borderRadius: '50%',
-          background: '#fff',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
-          transition: 'left 0.15s',
-        }}
-      />
-    </div>
-  );
-}
-
-// One subtitle layer's full control set: on/off + size/color/shadow, all
-// independently adjustable per layer (日/中/拼 each get their own instance)
-// rather than one shared size+color for all three.
-function SubtitleLayerPanel({ theme, label, badge, enabled, onToggleEnabled, style, onStyleChange }) {
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-          {label}
-          {badge}
-        </span>
-        <ToggleSwitch checked={enabled} onChange={onToggleEnabled} />
-      </div>
-      <div
-        style={{
-          opacity: enabled ? 1 : 0.4,
-          pointerEvents: enabled ? 'auto' : 'none',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 8,
-        }}
-      >
-        <div>
-          <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 4 }}>大小</div>
-          <input
-            type="range"
-            min="0.7"
-            max="1.6"
-            step="0.05"
-            value={style.scale}
-            onChange={(e) => onStyleChange({ scale: Number(e.target.value) })}
-            style={{ width: '100%', accentColor: ACCENT }}
-          />
-        </div>
-        <div>
-          <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 4 }}>顏色</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {COLOR_SWATCHES.map((c) => (
-              <button
-                key={c}
-                onClick={() => onStyleChange({ color: c })}
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: '50%',
-                  cursor: 'pointer',
-                  background: c,
-                  border: style.color === c ? `2px solid ${ACCENT}` : '1px solid rgba(0,0,0,0.15)',
-                }}
-              />
-            ))}
-          </div>
-        </div>
-        <div>
-          <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 4 }}>陰影強度</div>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            value={style.shadow}
-            onChange={(e) => onStyleChange({ shadow: Number(e.target.value) })}
-            style={{ width: '100%', accentColor: ACCENT }}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
+// Per-layer selector-chip dot colors (design handoff §版面結構 5, redesign
+// note #5) — fixed, not theme-dependent.
+const LAYER_DOTS = { jp: '#ffffff', cn: '#ffe9a8', ro: '#a8e6ff' };
 
 // "+0.5s" / "-1.2s" / "0s" — offset step is 100ms so seconds always land on
 // a single decimal place; drop the decimal entirely for whole seconds.
@@ -123,17 +18,23 @@ function formatOffsetLabel(ms) {
 }
 
 // Settings popover — README §版面結構 5. Liquid-glass panel (14px radius),
-// anchored bottom-right, 230px wide. Playback speed segmented buttons drive
-// <video>.playbackRate now; font-size/color are stored for the Phase 3
-// subtitle overlay to consume.
+// anchored bottom-right, 250px wide. Playback speed segmented buttons drive
+// <video>.playbackRate; per-layer style is stored for SubtitleOverlay to
+// consume.
+//
+// "字幕圖層" (redesign note #5): instead of three fully-expanded per-layer
+// panels, this is a row of 3 selectable chips (dot + label + the layer's own
+// on/off switch) plus ONE shared 大小/陰影 editor below that applies to
+// whichever layer chip is currently selected (`editingLayer`, pure UI
+// selection state — not persisted, doesn't need to live in App.jsx). Each
+// layer still keeps fully independent scale/shadow (and color, unexposed
+// here — swatch picker dropped from this pass's scope) in its own style
+// object; only the UI to reach them is consolidated.
 export default function SettingsPopover({
   theme,
   dark,
   speed,
   onSpeedChange,
-  // Per-layer on/off + appearance (moved in from ControlBar's old 日/中/拼
-  // chips, plus size/color now adjustable per layer instead of one shared
-  // fontScale/jpColor for all three — see SubtitleLayerPanel above).
   subJP,
   onToggleSubJP,
   subCN,
@@ -147,7 +48,7 @@ export default function SettingsPopover({
   romajiStyle,
   onRomajiStyleChange,
   // dsd.md §7 translate_partial — minimal hint that some 中文 lines are
-  // missing translation; shown as a small badge next to the 中文 toggle.
+  // missing translation; shown as a small badge next to the 中文 chip label.
   translatePartial,
   subtitleOffsetMs,
   onSubtitleOffsetChange,
@@ -182,9 +83,26 @@ export default function SettingsPopover({
   // Collapsed by default (README §版面結構 5 keeps this panel compact) — the
   // Whisper/VAD knobs are power-user territory most sessions won't touch.
   const [genSettingsOpen, setGenSettingsOpen] = useState(false);
+  // Which layer's sliders the shared editor card below the chip row shows.
+  const [editingLayer, setEditingLayer] = useState('jp');
+
+  const layerDefs = [
+    { key: 'jp', label: '日文', on: subJP, onToggle: onToggleSubJP, style: jpStyle, setStyle: onJpStyleChange },
+    {
+      key: 'cn',
+      label: '中文',
+      on: subCN,
+      onToggle: onToggleSubCN,
+      style: cnStyle,
+      setStyle: onCnStyleChange,
+      badge: translatePartial,
+    },
+    { key: 'ro', label: '羅馬拼音', on: subRomaji, onToggle: onToggleSubRomaji, style: romajiStyle, setStyle: onRomajiStyleChange },
+  ];
+  const selectedLayer = layerDefs.find((l) => l.key === editingLayer) || layerDefs[0];
 
   return (
-    <div style={{ position: 'absolute', bottom: 38, right: 0, zIndex: 5, width: 230 }}>
+    <div style={{ position: 'absolute', bottom: 40, right: 0, zIndex: 5, width: 250 }}>
       <div style={{ position: 'relative', borderRadius: 14 }}>
         {/* liquid-glass backplate — macos-window.jsx MacGlass, reimplemented inline */}
         <div
@@ -192,13 +110,11 @@ export default function SettingsPopover({
             position: 'absolute',
             inset: 0,
             borderRadius: 14,
-            background: dark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.35)',
-            backdropFilter: 'blur(40px) saturate(180%)',
-            WebkitBackdropFilter: 'blur(40px) saturate(180%)',
-            border: dark ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(255,255,255,0.6)',
-            boxShadow: dark
-              ? '0 8px 40px rgba(0,0,0,0.2)'
-              : '0 8px 40px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.4)',
+            background: theme.popGlassBg,
+            backdropFilter: 'blur(44px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(44px) saturate(180%)',
+            border: `0.5px solid ${theme.popGlassBorder}`,
+            boxShadow: '0 12px 46px rgba(0,0,0,0.35)',
           }}
         />
         <div
@@ -209,90 +125,146 @@ export default function SettingsPopover({
             display: 'flex',
             flexDirection: 'column',
             gap: 12,
-            maxHeight: 'min(75vh, 560px)',
+            maxHeight: 'min(74vh, 600px)',
             overflowY: 'auto',
             boxSizing: 'border-box',
           }}
         >
-          <div style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>播放設定</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>播放速率</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+            {SPEEDS.map((v) => {
+              const active = speed === v;
+              return (
+                <button
+                  key={v}
+                  onClick={() => onSpeedChange(v)}
+                  style={{
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '7px 9px',
+                    borderRadius: 7,
+                    background: active ? theme.segmentActiveBg : theme.segBg,
+                    color: active ? theme.segmentActiveText : theme.textTertiary,
+                    flex: 1,
+                  }}
+                >
+                  {v}x
+                </button>
+              );
+            })}
+          </div>
 
-          <div>
-            <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>播放速率</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 2, borderRadius: 8, padding: 2 }}>
-              {SPEEDS.map((v) => {
-                const active = speed === v;
-                return (
-                  <button
-                    key={v}
-                    onClick={() => onSpeedChange(v)}
+          <div style={{ borderTop: `1px solid ${theme.hairline}`, paddingTop: 10, fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>
+            字幕圖層
+          </div>
+
+          <div style={{ display: 'flex', gap: 6 }}>
+            {layerDefs.map((l) => {
+              const selected = l.key === editingLayer;
+              return (
+                <div
+                  key={l.key}
+                  onClick={() => setEditingLayer(l.key)}
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '8px 4px',
+                    borderRadius: 9,
+                    cursor: 'pointer',
+                    background: selected ? (dark ? 'rgba(255,255,255,0.1)' : '#ffffff') : 'transparent',
+                    border: `1px solid ${selected ? theme.hairline : 'transparent'}`,
+                  }}
+                >
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: LAYER_DOTS[l.key] }} />
+                  <span
                     style={{
-                      border: 'none',
-                      cursor: 'pointer',
-                      fontSize: 12,
+                      fontSize: 11,
                       fontWeight: 600,
-                      padding: '8px 10px',
-                      borderRadius: 7,
-                      background: active ? theme.segmentActiveBg : theme.segmentBg,
-                      color: active ? theme.segmentActiveText : theme.textTertiary,
-                      boxShadow: active ? '0 1px 2px rgba(0,0,0,0.15)' : 'none',
+                      color: theme.textPrimary,
+                      opacity: l.on ? 1 : 0.4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4,
                     }}
                   >
-                    {v}x
-                  </button>
-                );
-              })}
+                    {l.label}
+                    {l.badge && (
+                      <span
+                        title="部分中文翻譯缺失"
+                        style={{ width: 5, height: 5, borderRadius: '50%', background: '#ffb020', display: 'inline-block' }}
+                      />
+                    )}
+                  </span>
+                  <div
+                    role="switch"
+                    aria-checked={l.on}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      l.onToggle();
+                    }}
+                    style={{
+                      width: 26,
+                      height: 15,
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      background: l.on ? ACCENT : 'rgba(127,127,127,0.35)',
+                      position: 'relative',
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 1.5,
+                        left: l.on ? 13 : 1.5,
+                        width: 12,
+                        height: 12,
+                        borderRadius: '50%',
+                        background: '#fff',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                        transition: 'left 0.15s',
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ background: theme.segBg, borderRadius: 10, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: theme.textPrimary }}>正在編輯：{selectedLayer.label}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 9, color: theme.textTertiary, width: 26, flexShrink: 0 }}>大小</span>
+              <input
+                type="range"
+                min="0.7"
+                max="1.6"
+                step="0.05"
+                value={selectedLayer.style.scale}
+                onChange={(e) => selectedLayer.setStyle({ scale: Number(e.target.value) })}
+                style={{ width: '100%', accentColor: ACCENT }}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 9, color: theme.textTertiary, width: 26, flexShrink: 0 }}>陰影</span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={selectedLayer.style.shadow}
+                onChange={(e) => selectedLayer.setStyle({ shadow: Number(e.target.value) })}
+                style={{ width: '100%', accentColor: ACCENT }}
+              />
             </div>
           </div>
 
-          <div style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>字幕樣式</div>
-
-          <SubtitleLayerPanel
-            theme={theme}
-            label="日文"
-            enabled={subJP}
-            onToggleEnabled={onToggleSubJP}
-            style={jpStyle}
-            onStyleChange={onJpStyleChange}
-          />
-
-          <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 12 }}>
-            <SubtitleLayerPanel
-              theme={theme}
-              label="中文"
-              badge={
-                translatePartial && (
-                  <span
-                    title="部分中文翻譯缺失"
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: '#ffb020',
-                      display: 'inline-block',
-                    }}
-                  />
-                )
-              }
-              enabled={subCN}
-              onToggleEnabled={onToggleSubCN}
-              style={cnStyle}
-              onStyleChange={onCnStyleChange}
-            />
-          </div>
-
-          <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 12 }}>
-            <SubtitleLayerPanel
-              theme={theme}
-              label="羅馬拼音"
-              enabled={subRomaji}
-              onToggleEnabled={onToggleSubRomaji}
-              style={romajiStyle}
-              onStyleChange={onRomajiStyleChange}
-            />
-          </div>
-
           <div>
-            <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>字幕背景</div>
+            <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 5 }}>字幕背景</div>
             <input
               type="range"
               min="0"
@@ -304,18 +276,9 @@ export default function SettingsPopover({
             />
           </div>
 
-          <div style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>字幕時間校正</div>
-
-          <div>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: 6,
-              }}
-            >
-              <span style={{ fontSize: 11, color: theme.textTertiary }}>偏移量</span>
+          <div style={{ borderTop: `1px solid ${theme.hairline}`, paddingTop: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>字幕時間校正</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span
                   style={{
@@ -323,8 +286,6 @@ export default function SettingsPopover({
                     fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace',
                     fontWeight: 700,
                     color: theme.textPrimary,
-                    minWidth: 38,
-                    textAlign: 'right',
                   }}
                 >
                   {formatOffsetLabel(subtitleOffsetMs)}
@@ -335,15 +296,22 @@ export default function SettingsPopover({
                   style={{
                     border: 'none',
                     cursor: 'pointer',
-                    fontSize: 10,
-                    fontWeight: 600,
-                    padding: '3px 7px',
+                    padding: 4,
                     borderRadius: 6,
-                    background: theme.segmentBg,
+                    background: theme.segBg,
                     color: theme.textTertiary,
+                    display: 'flex',
                   }}
                 >
-                  歸零
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M3 12a9 9 0 109-9M3 12V4M3 12h8"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
                 </button>
               </span>
             </div>
@@ -363,7 +331,7 @@ export default function SettingsPopover({
             </div>
           </div>
 
-          <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 8 }}>
+          <div style={{ borderTop: `1px solid ${theme.hairline}`, paddingTop: 8 }}>
             <button
               onClick={() => setGenSettingsOpen((o) => !o)}
               style={{
@@ -423,7 +391,7 @@ export default function SettingsPopover({
 
           <div
             style={{
-              borderTop: `1px solid ${theme.border}`,
+              borderTop: `1px solid ${theme.hairline}`,
               paddingTop: 8,
               display: 'flex',
               flexDirection: 'column',
@@ -438,9 +406,9 @@ export default function SettingsPopover({
                 cursor: regenerateDisabled ? 'default' : 'pointer',
                 fontSize: 11,
                 fontWeight: 700,
-                padding: '7px 12px',
+                padding: '8px 12px',
                 borderRadius: 999,
-                background: regenerateDisabled ? theme.segmentBg : ACCENT,
+                background: regenerateDisabled ? theme.segBg : ACCENT,
                 color: regenerateDisabled ? theme.textTertiary : '#fff',
                 opacity: regenerateDisabled ? 0.6 : 1,
                 width: '100%',
@@ -456,13 +424,13 @@ export default function SettingsPopover({
               onClick={onRetranslateSubtitles}
               disabled={retranslateDisabled}
               style={{
-                border: `1px solid ${retranslateDisabled ? 'transparent' : theme.border}`,
+                border: `1px solid ${retranslateDisabled ? 'transparent' : theme.hairline}`,
                 cursor: retranslateDisabled ? 'default' : 'pointer',
                 fontSize: 11,
                 fontWeight: 700,
-                padding: '7px 12px',
+                padding: '8px 12px',
                 borderRadius: 999,
-                background: theme.segmentBg,
+                background: theme.segBg,
                 color: retranslateDisabled ? theme.textTertiary : theme.textPrimary,
                 opacity: retranslateDisabled ? 0.6 : 1,
                 width: '100%',
@@ -476,13 +444,7 @@ export default function SettingsPopover({
             </div>
           </div>
 
-          <div
-            style={{
-              fontSize: 10,
-              color: theme.textTertiary,
-              paddingTop: 2,
-            }}
-          >
+          <div style={{ fontSize: 10, color: theme.textTertiary, paddingTop: 2 }}>
             字幕來源：本地 Whisper 辨識＋翻譯 API
           </div>
         </div>

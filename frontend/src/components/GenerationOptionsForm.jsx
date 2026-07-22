@@ -42,8 +42,8 @@ export default function GenerationOptionsForm({
     fontSize: 12,
     padding: '6px 8px',
     borderRadius: 7,
-    border: `1px solid ${theme.border}`,
-    background: theme.segmentBg,
+    border: `1px solid ${theme.hairline}`,
+    background: theme.segBg,
     color: theme.textPrimary,
     fontFamily: 'inherit',
   };

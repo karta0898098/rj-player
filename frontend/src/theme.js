@@ -1,22 +1,58 @@
-// Design Tokens — from design_handoff_youtube_subtitle_player/README.md
-// §Design Tokens, copied 1:1 from the working prototype
-// (`YouTube 字幕播放器.dc.html`, `theme` object inside `renderVals()`).
+// Design Tokens — from design_handoff_dark_mode_ux/README.md §Design Tokens,
+// copied 1:1 from the working prototype (`RJ Player.dc.html`'s `getTheme()`
+// inside `Component`). Dark is a much darker macOS-vibrancy glass look (not
+// gray); light is largely unchanged from before this pass.
 
 export const ACCENT = '#e0453f';
 
 export function getTheme(dark) {
-  return {
-    winBg: dark ? '#1e1e20' : '#ffffff',
-    border: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)',
-    textPrimary: dark ? 'rgba(255,255,255,0.92)' : 'rgba(0,0,0,0.88)',
-    textSecondary: dark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.55)',
-    textTertiary: dark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.45)',
-    chipInactiveBg: dark ? 'rgba(255,255,255,0.1)' : '#f2f2f4',
-    chipInactiveText: dark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.55)',
-    segmentBg: dark ? 'rgba(255,255,255,0.08)' : '#f2f2f4',
-    segmentActiveBg: dark ? 'rgba(255,255,255,0.18)' : '#ffffff',
-    segmentActiveText: dark ? '#ffffff' : 'rgba(0,0,0,0.85)',
-    urlPillBg: dark ? 'rgba(255,255,255,0.08)' : '#f2f2f4',
-    trackBg: dark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.09)',
-  };
+  return dark
+    ? {
+        ambientBase: '#050506',
+        blobOpacity1: 0.24,
+        blobOpacity2: 0.22,
+        blobOpacity3: 0.16,
+        vignette: 'radial-gradient(125% 95% at 50% 10%, transparent 35%, rgba(0,0,0,0.72) 100%)',
+        winBg: 'rgba(17,17,19,0.62)',
+        winBorder: 'rgba(255,255,255,0.07)',
+        winInsetHighlight: 'rgba(255,255,255,0.05)',
+        hairline: 'rgba(255,255,255,0.07)',
+        textPrimary: 'rgba(255,255,255,0.94)',
+        textSecondary: 'rgba(255,255,255,0.56)',
+        textTertiary: 'rgba(255,255,255,0.34)',
+        chipBg: 'rgba(255,255,255,0.07)',
+        inputBg: 'rgba(255,255,255,0.07)',
+        segBg: 'rgba(255,255,255,0.06)',
+        segmentActiveBg: 'rgba(255,255,255,0.18)',
+        segmentActiveText: 'rgba(255,255,255,0.94)',
+        trackBg: 'rgba(255,255,255,0.12)',
+        toggleTrack: 'rgba(255,255,255,0.14)',
+        playBtnBg: 'rgba(255,255,255,0.12)',
+        popGlassBg: 'rgba(255,255,255,0.065)',
+        popGlassBorder: 'rgba(255,255,255,0.12)',
+      }
+    : {
+        ambientBase: '#eef0f4',
+        blobOpacity1: 0.18,
+        blobOpacity2: 0.14,
+        blobOpacity3: 0.1,
+        vignette: 'radial-gradient(125% 95% at 50% 10%, transparent 45%, rgba(0,0,0,0.1) 100%)',
+        winBg: 'rgba(255,255,255,0.68)',
+        winBorder: 'rgba(0,0,0,0.06)',
+        winInsetHighlight: 'rgba(255,255,255,0.6)',
+        hairline: 'rgba(0,0,0,0.07)',
+        textPrimary: 'rgba(0,0,0,0.88)',
+        textSecondary: 'rgba(0,0,0,0.55)',
+        textTertiary: 'rgba(0,0,0,0.42)',
+        chipBg: '#f0f0f3',
+        inputBg: '#f0f0f3',
+        segBg: '#f0f0f3',
+        segmentActiveBg: '#ffffff',
+        segmentActiveText: 'rgba(0,0,0,0.88)',
+        trackBg: 'rgba(0,0,0,0.09)',
+        toggleTrack: '#e4e4e8',
+        playBtnBg: '#1c1c1e',
+        popGlassBg: 'rgba(255,255,255,0.45)',
+        popGlassBorder: 'rgba(255,255,255,0.7)',
+      };
 }

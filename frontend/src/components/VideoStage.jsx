@@ -292,15 +292,16 @@ export default function VideoStage({
         >
           <div
             style={{
-              width: 64,
-              height: 64,
+              width: 68,
+              height: 68,
               borderRadius: '50%',
-              background: 'rgba(0,0,0,0.5)',
+              background: 'rgba(0,0,0,0.42)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              backdropFilter: 'blur(6px)',
-              WebkitBackdropFilter: 'blur(6px)',
+              backdropFilter: 'blur(10px) saturate(160%)',
+              WebkitBackdropFilter: 'blur(10px) saturate(160%)',
+              border: '0.5px solid rgba(255,255,255,0.18)',
             }}
           >
             <div

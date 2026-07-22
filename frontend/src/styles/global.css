@@ -11,9 +11,10 @@ body,
 body {
   margin: 0;
   /* Dark fallback behind the <AmbientBackground> layer (which paints the real
-     themed aurora/Ambilight backdrop) — avoids a white flash on first paint. */
-  background: #08080c;
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Helvetica Neue', sans-serif;
+     themed aurora/Ambilight backdrop) — avoids a white flash on first paint.
+     Matches theme.js's dark ambientBase. */
+  background: #050506;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 

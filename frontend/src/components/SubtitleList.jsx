@@ -122,7 +122,7 @@ export default function SubtitleList({
     padding: '4px 6px',
     borderRadius: 6,
     border: `1px solid ${ACCENT}`,
-    background: theme.segmentBg,
+    background: theme.segBg,
     color: theme.textPrimary,
     resize: 'vertical',
   };
@@ -166,7 +166,7 @@ export default function SubtitleList({
             alignItems: 'center',
             gap: 6,
             padding: '6px 12px',
-            borderBottom: `1px solid ${theme.border}`,
+            borderBottom: `1px solid ${theme.hairline}`,
           }}
         >
           <span style={{ fontSize: 10, color: theme.textTertiary }}>匯出</span>
@@ -182,7 +182,7 @@ export default function SubtitleList({
                 fontWeight: 700,
                 padding: '3px 8px',
                 borderRadius: 6,
-                background: theme.segmentBg,
+                background: theme.segBg,
                 color: theme.textSecondary,
                 textTransform: 'uppercase',
               }}
@@ -227,7 +227,7 @@ export default function SubtitleList({
                   padding: '8px 14px 8px 12px',
                   cursor: 'pointer',
                   borderLeft: `3px solid ${isActive ? ACCENT : 'transparent'}`,
-                  background: isActive ? 'rgba(224,69,63,0.14)' : 'transparent',
+                  background: isActive ? 'rgba(224,69,63,0.16)' : 'transparent',
                 }}
               >
                 <div

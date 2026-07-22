@@ -1,5 +1,37 @@
 import { useState } from 'react';
-import { PIPELINE_STATUS_LABELS } from '../utils.js';
+import { PIPELINE_STATUS_LABELS, formatTime } from '../utils.js';
+
+// 56×32 rounded "縮圖" placeholder (design handoff §側邊欄) — the backend
+// doesn't serve real per-video thumbnail images (VideoSummary has no
+// thumbnail URL), so this renders a themed placeholder tile with a small
+// play glyph instead of an actual <img>.
+function ThumbnailPlaceholder({ theme }) {
+  return (
+    <div
+      style={{
+        width: 56,
+        height: 32,
+        borderRadius: 6,
+        flexShrink: 0,
+        background: theme.segBg,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <div
+        style={{
+          width: 0,
+          height: 0,
+          borderTop: '5px solid transparent',
+          borderBottom: '5px solid transparent',
+          borderLeft: `7px solid ${theme.textTertiary}`,
+          marginLeft: 2,
+        }}
+      />
+    </div>
+  );
+}
 
 // Playlist body — the other of the two tabs hosted inside SidebarPanel.jsx
 // (see SubtitleList.jsx for the sibling). Unlike the transient Queue strip
@@ -82,6 +114,7 @@ export default function PlaylistPanel({ theme, items, activeVideoId, onSelect, o
             >
               ⋮⋮
             </span>
+            <ThumbnailPlaceholder theme={theme} />
             {item.is_music_video && <span title="音樂 MV">🎵</span>}
             <div style={{ minWidth: 0, flex: 1 }}>
               <div
@@ -106,7 +139,9 @@ export default function PlaylistPanel({ theme, items, activeVideoId, onSelect, o
                   whiteSpace: 'nowrap',
                 }}
               >
-                {item.channel ? `${item.channel} · ${label}` : label}
+                {[item.channel, item.duration_ms ? formatTime(item.duration_ms / 1000) : null, label]
+                  .filter(Boolean)
+                  .join(' · ')}
               </div>
             </div>
             <button
@@ -122,12 +157,13 @@ export default function PlaylistPanel({ theme, items, activeVideoId, onSelect, o
                 background: 'transparent',
                 cursor: 'pointer',
                 color: theme.textTertiary,
-                fontSize: 12,
                 padding: 4,
-                lineHeight: 1,
+                display: 'flex',
               }}
             >
-              ✕
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
             </button>
           </div>
         );

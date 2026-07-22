@@ -19,7 +19,7 @@ export default function QueueList({ theme, items, onCancel }) {
         gap: 8,
         overflowX: 'auto',
         padding: '8px 16px',
-        borderBottom: `1px solid ${theme.border}`,
+        borderBottom: `1px solid ${theme.hairline}`,
         flexShrink: 0,
       }}
     >
@@ -38,7 +38,7 @@ export default function QueueList({ theme, items, onCancel }) {
               maxWidth: 220,
               padding: '5px 10px',
               borderRadius: 999,
-              background: theme.chipInactiveBg,
+              background: theme.chipBg,
             }}
           >
             {item.is_music_video && <span title="音樂 MV">🎵</span>}
@@ -68,12 +68,13 @@ export default function QueueList({ theme, items, onCancel }) {
                   background: 'transparent',
                   cursor: 'pointer',
                   color: theme.textTertiary,
-                  fontSize: 12,
                   padding: 0,
-                  lineHeight: 1,
+                  display: 'flex',
                 }}
               >
-                ✕
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
               </button>
             )}
           </div>

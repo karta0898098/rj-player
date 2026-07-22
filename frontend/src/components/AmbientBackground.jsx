@@ -8,7 +8,10 @@ import { ACCENT } from '../theme.js';
 //     the surrounding space picks up the video's colours (dominant while a
 //     video is loaded). Cheap: we draw the video into a tiny 96×54 canvas a
 //     few times a second and blow it up, heavily blurred.
-export default function AmbientBackground({ dark, videoSrc, videoRef }) {
+// Base color/blob opacities/vignette come from theme.js (design handoff
+// §Design Tokens) — `dark` is passed separately only for the ambilight
+// canvas's own brightness/opacity, which isn't part of the token set.
+export default function AmbientBackground({ theme, dark, videoSrc, videoRef }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -33,8 +36,6 @@ export default function AmbientBackground({ dark, videoSrc, videoRef }) {
     return () => cancelAnimationFrame(raf);
   }, [videoSrc, videoRef]);
 
-  const base = dark ? '#08080c' : '#eaecf1';
-
   return (
     <div
       aria-hidden="true"
@@ -43,13 +44,13 @@ export default function AmbientBackground({ dark, videoSrc, videoRef }) {
         inset: 0,
         zIndex: 0,
         overflow: 'hidden',
-        background: base,
+        background: theme.ambientBase,
         pointerEvents: 'none',
       }}
     >
-      <div style={blob(ACCENT, '-18%', '-12%', '58vw', dark ? 0.3 : 0.22, '0s')} />
-      <div style={blob(dark ? '#3a5bd0' : '#88a6ff', '48%', '58%', '62vw', dark ? 0.28 : 0.18, '-9s')} />
-      <div style={blob(dark ? '#7b3ff2' : '#c6a3ff', '68%', '-8%', '46vw', dark ? 0.2 : 0.12, '-16s')} />
+      <div style={blob(ACCENT, '-16%', '-14%', '56vw', theme.blobOpacity1, '0s')} />
+      <div style={blob('#3a5bd0', '46%', '56%', '60vw', theme.blobOpacity2, '-8s')} />
+      <div style={blob('#7b3ff2', '64%', '-10%', '44vw', theme.blobOpacity3, '-16s')} />
 
       {videoSrc && (
         <canvas
@@ -69,15 +70,7 @@ export default function AmbientBackground({ dark, videoSrc, videoRef }) {
       )}
 
       {/* vignette — sinks the edges so the player floats */}
-      <div
-        style={{
-          position: 'absolute',
-          inset: 0,
-          background: dark
-            ? 'radial-gradient(125% 95% at 50% 12%, transparent 38%, rgba(0,0,0,0.6) 100%)'
-            : 'radial-gradient(125% 95% at 50% 12%, transparent 45%, rgba(0,0,0,0.12) 100%)',
-        }}
-      />
+      <div style={{ position: 'absolute', inset: 0, background: theme.vignette }} />
     </div>
   );
 }
@@ -93,6 +86,6 @@ function blob(color, top, left, size, opacity, delay) {
     opacity,
     borderRadius: '50%',
     willChange: 'transform',
-    animation: `ambientDrift 30s ease-in-out ${delay} infinite alternate`,
+    animation: `ambientDrift 34s ease-in-out ${delay} infinite alternate`,
   };
 }

@@ -212,7 +212,9 @@ export default function App() {
   // Ordered video_ids added via "加入佇列", independent of processing status;
   // persisted to localStorage so manual reordering survives a reload.
   const [playlistIds, setPlaylistIds] = useState(() => loadPlaylist());
-  const [sidebarTab, setSidebarTab] = useState('subtitles'); // 'subtitles' | 'playlist'
+  // 'playlist' is the default active tab (design handoff change #4 — was
+  // 'subtitles').
+  const [sidebarTab, setSidebarTab] = useState('playlist'); // 'subtitles' | 'playlist'
 
   useEffect(() => {
     savePlaylist(playlistIds);
@@ -979,11 +981,14 @@ export default function App() {
 
   return (
     <>
-      <AmbientBackground dark={darkMode} videoSrc={videoSrc} videoRef={videoRef} />
+      <AmbientBackground theme={theme} dark={darkMode} videoSrc={videoSrc} videoRef={videoRef} />
       <div style={{ position: 'relative', zIndex: 1, width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', boxSizing: 'border-box' }}>
       <div
         style={{
           background: theme.winBg,
+          backdropFilter: 'blur(46px) saturate(170%)',
+          WebkitBackdropFilter: 'blur(46px) saturate(170%)',
+          border: `0.5px solid ${theme.winBorder}`,
           // Scales with the actual viewport (vw) instead of a fixed px
           // width, capped generously so it keeps growing on large monitors
           // instead of plateauing at a size tuned for a ~1440px-wide
@@ -1001,14 +1006,12 @@ export default function App() {
           // falls through to scrolling the BROWSER PAGE on every active-cue
           // change instead of scrolling internally.
           maxHeight: 'calc(100vh - 40px)',
-          borderRadius: 20,
+          borderRadius: 18,
           overflow: 'hidden',
-          boxShadow: darkMode
-            ? '0 0 0 1px rgba(255,255,255,0.06), 0 30px 90px rgba(0,0,0,0.6), 0 0 140px rgba(224,69,63,0.09)'
-            : '0 0 0 1px rgba(0,0,0,0.08), 0 24px 60px rgba(0,0,0,0.22)',
+          boxShadow: `0 40px 100px rgba(0,0,0,0.5), inset 0 1px 0 ${theme.winInsetHighlight}`,
           display: 'flex',
           flexDirection: 'column',
-          fontFamily: "-apple-system,BlinkMacSystemFont,'SF Pro','Helvetica Neue',sans-serif",
+          fontFamily: "-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif",
         }}
       >
         <Titlebar
@@ -1026,7 +1029,6 @@ export default function App() {
           optionsSlot={
             <AddToQueuePopover
               theme={theme}
-              dark={darkMode}
               previewLoading={queuePreviewLoading}
               previewError={queuePreviewError}
               previewTitle={queuePreview?.title}
@@ -1052,9 +1054,6 @@ export default function App() {
               isMusicVideo={queueDraft.isMusicVideo}
               onIsMusicVideoChange={setQueueMusicVideo}
               onResetGenerationSettings={resetQueueDraft}
-              onSubmit={handleUrlSubmit}
-              submitDisabled={queueSubmitting || !urlInput.trim()}
-              submitting={queueSubmitting}
             />
           }
         />
@@ -1115,8 +1114,8 @@ export default function App() {
               activeTab={sidebarTab}
               onTabChange={setSidebarTab}
               tabs={[
+                { key: 'playlist', label: '清單', badge: playlistItems.length ? playlistItems.length : null },
                 { key: 'subtitles', label: '字幕', badge: hasCues ? `${cues.length} 句` : null },
-                { key: 'playlist', label: '播放清單', badge: playlistItems.length ? playlistItems.length : null },
               ]}
             >
               {sidebarTab === 'subtitles' ? (
