@@ -416,6 +416,23 @@ export default function App() {
     };
   }, []);
 
+  // Desktop app: exit native window fullscreen on Esc. macOS window fullscreen
+  // (unlike the browser's element fullscreen, which the `fullscreenchange`
+  // listener above already tracks) doesn't respond to Esc on its own, so the
+  // user would otherwise be stuck. Only armed while fullscreen in Tauri.
+  useEffect(() => {
+    if (!isFullscreen || !isTauri()) return;
+    function onKeyDown(e) {
+      if (e.key === 'Escape') {
+        toggleWindowFullscreen().then((next) => {
+          if (next !== null) setIsFullscreen(next);
+        });
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isFullscreen]);
+
   // Persist generation settings to localStorage on every change (including
   // the initial mount, which harmlessly re-saves whatever was just loaded).
   useEffect(() => {
@@ -1164,8 +1181,13 @@ export default function App() {
       <div
         style={{
           background: theme.winBg,
-          backdropFilter: 'blur(46px) saturate(170%)',
-          WebkitBackdropFilter: 'blur(46px) saturate(170%)',
+          // A backdrop-filter (like transform/filter) makes this card the
+          // containing block for any position:fixed descendant, which would trap
+          // the fullscreen video stage inside the card instead of the viewport.
+          // Drop it while fullscreen so the stage's position:fixed fills the
+          // whole screen (the card is covered by the stage then anyway).
+          backdropFilter: isFullscreen ? 'none' : 'blur(46px) saturate(170%)',
+          WebkitBackdropFilter: isFullscreen ? 'none' : 'blur(46px) saturate(170%)',
           border: `0.5px solid ${theme.winBorder}`,
           // Scales with the actual viewport (vw) instead of a fixed px
           // width, capped generously so it keeps growing on large monitors
