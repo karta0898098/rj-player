@@ -124,6 +124,24 @@ fn resolve_config(handle: &AppHandle) -> Config {
         std::env::set_var("AI_DIR", dev_path("ai"));
     }
 
+    // Managed Python runtime + model cache (dsd §13.2/§13.4): everything the
+    // Doctor downloads lives under a writable per-user runtime dir, out of the
+    // read-only app bundle. Point uv's install/cache dirs and the Hugging Face
+    // model cache there. If the managed venv has already been built, use its
+    // python; otherwise leave AI_PYTHON at its default so ./dev.sh keeps using
+    // the repo venv before the Doctor has run.
+    if let Ok(app_data) = handle.path().app_data_dir() {
+        let runtime = app_data.join("runtime");
+        set_env_if_absent("RJ_RUNTIME_DIR", &runtime);
+        set_env_if_absent("UV_PYTHON_INSTALL_DIR", runtime.join("python"));
+        set_env_if_absent("UV_CACHE_DIR", runtime.join("uv-cache"));
+        set_env_if_absent("HF_HOME", app_data.join("models"));
+        let managed_python = runtime.join("venv/bin/python");
+        if std::env::var_os("AI_PYTHON").is_none() && managed_python.is_file() {
+            std::env::set_var("AI_PYTHON", managed_python);
+        }
+    }
+
     // yt-dlp / ffmpeg: in a bundle the sidecars sit next to the executable
     // (Tauri externalBin, copied without the triple suffix) — prefer those so
     // downloading + audio extraction work with no system install (dsd.md §13,
@@ -131,7 +149,11 @@ fn resolve_config(handle: &AppHandle) -> Config {
     // stay unset and resolve from PATH (Homebrew, prepended below).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for (key, name) in [("YT_DLP_PATH", "yt-dlp"), ("FFMPEG_PATH", "ffmpeg")] {
+            for (key, name) in [
+                ("YT_DLP_PATH", "yt-dlp"),
+                ("FFMPEG_PATH", "ffmpeg"),
+                ("UV_PATH", "uv"),
+            ] {
                 if std::env::var_os(key).is_none() {
                     let cand = dir.join(name);
                     if cand.is_file() {
@@ -148,6 +170,14 @@ fn resolve_config(handle: &AppHandle) -> Config {
     prepend_path(&["/opt/homebrew/bin", "/usr/local/bin"]);
 
     Config::load()
+}
+
+/// Set an env var only if it isn't already set, so an explicit override (a real
+/// env var, or `config.toml`-adjacent settings) always wins.
+fn set_env_if_absent(key: &str, val: impl AsRef<std::ffi::OsStr>) {
+    if std::env::var_os(key).is_none() {
+        std::env::set_var(key, val);
+    }
 }
 
 /// A path under the repo root, derived from this crate's manifest dir

@@ -9,7 +9,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use crate::http::{media, subtitles, videos, ws};
+use crate::http::{doctor, media, subtitles, videos, ws};
 use crate::state::SharedState;
 
 /// Build the HTTP router. `dist_dir` is the built frontend directory served
@@ -26,6 +26,7 @@ pub fn build_router(state: SharedState, dist_dir: &Path) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/api/doctor", get(doctor::get_doctor))
         .route(
             "/api/videos",
             get(videos::list_videos).post(videos::create_video),

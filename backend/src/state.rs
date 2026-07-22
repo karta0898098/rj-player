@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::config::Config;
 use crate::core::downloader::YtDlp;
 use crate::core::pipeline::{EventHub, JobSender};
 use crate::core::store::FsStore;
@@ -15,6 +16,9 @@ pub struct AppState {
     /// `POST /api/videos/preview` handler, which needs a metadata-only
     /// yt-dlp call before the user commits to queuing the video.
     pub ytdlp: Arc<YtDlp>,
+    /// Resolved configuration, exposed so read-only handlers (e.g. the Doctor,
+    /// dsd.md §13.3) can inspect the tool/runtime paths and key presence.
+    pub config: Arc<Config>,
 }
 
 pub type SharedState = Arc<AppState>;

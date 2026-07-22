@@ -54,6 +54,11 @@ pub struct Config {
     /// `{AI_DIR}/worker.py`). Not independently settable from
     /// `config.toml`; it derives from `ai_dir` (see [`Self::load`]).
     pub ai_worker: String,
+    /// Path to the bundled `uv` binary the Doctor drives to install the managed
+    /// Python runtime + dependencies (dsd.md §13.4). Env: `UV_PATH`. `None` when
+    /// uv isn't bundled (e.g. the standalone dev binary) — the Doctor then
+    /// reports the managed runtime as unavailable rather than trying to build it.
+    pub uv_path: Option<String>,
     /// faster-whisper model size/name, passed through in the
     /// `generate_subtitles` RPC params. Env: `WHISPER_MODEL`. TOML:
     /// `[ai] whisper_model`. (default `medium` — better accuracy than
@@ -181,6 +186,7 @@ impl Config {
         let ai_python =
             std::env::var("AI_PYTHON").unwrap_or_else(|_| format!("{ai_dir}/.venv/bin/python"));
         let ai_worker = std::env::var("AI_WORKER").unwrap_or_else(|_| format!("{ai_dir}/worker.py"));
+        let uv_path = std::env::var("UV_PATH").ok();
         let whisper_model = std::env::var("WHISPER_MODEL")
             .ok()
             .or_else(|| file.as_ref().and_then(|f| f.ai.whisper_model.clone()))
@@ -216,6 +222,7 @@ impl Config {
             yt_dlp_format,
             ai_python,
             ai_worker,
+            uv_path,
             whisper_model,
             whisper_temperature,
             llm_provider,

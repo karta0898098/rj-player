@@ -66,6 +66,7 @@ pub async fn build_app(config: &Config) -> anyhow::Result<(Router, WorkerHandle)
         ffmpeg_path = %config.ffmpeg_path,
         ai_python = %config.ai_python,
         ai_worker = %config.ai_worker,
+        uv_path = ?config.uv_path,
         whisper_model = %config.whisper_model,
         whisper_temperature = config.whisper_temperature,
         llm_provider = ?config.llm_provider,
@@ -111,6 +112,7 @@ pub async fn build_app(config: &Config) -> anyhow::Result<(Router, WorkerHandle)
         job_tx,
         event_hub,
         ytdlp: ytdlp.clone(),
+        config: Arc::new(config.clone()),
     });
 
     requeue_leftover_jobs(&state).await;

@@ -16,7 +16,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/yt-dlp", "binaries/ffmpeg"],
+    "externalBin": ["binaries/yt-dlp", "binaries/ffmpeg", "binaries/uv"],
     "resources": {
       "../frontend/dist": "frontend/dist"
     },

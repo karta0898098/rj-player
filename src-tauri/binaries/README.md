@@ -34,5 +34,6 @@ yt-dlp-x86_64-apple-darwin    ffmpeg-x86_64-apple-darwin
 | yt-dlp | [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp) releases (`yt-dlp_macos`) | Official, universal2 — reused for both mac arches |
 | ffmpeg | [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) | Static per-arch macOS builds (no external dylib deps) |
 
-Windows targets are stubbed in the script for when B6.7 adds cross-platform
-packaging.
+macOS only for now. Windows is **not fetched yet** — the script is macOS-only;
+a commented `WINDOWS` block at the bottom notes the starting point (`yt-dlp.exe`
++ a static `ffmpeg.exe`) for when B6.7 adds cross-platform packaging.

@@ -2,6 +2,7 @@
 //! dsd.md §10). `http/` only translates HTTP requests into calls against
 //! these modules.
 
+pub mod doctor;
 pub mod domain;
 pub mod downloader;
 pub mod pipeline;
