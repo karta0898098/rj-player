@@ -40,9 +40,16 @@ pub fn run() {
             let handle = app.handle().clone();
             let config = resolve_config(&handle);
 
-            // Bind a random loopback port up front (synchronously) so the exact
-            // URL is known before the WebView is created.
-            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            // Bind a *stable* loopback port up front (synchronously) so the
+            // exact URL is known before the WebView is created — and, crucially,
+            // so the WebView origin (`http://127.0.0.1:<port>`) is the same every
+            // launch. A random port would give the SPA a new origin each run,
+            // which silently resets all its localStorage (setup-done flag, resume
+            // positions, playlists, settings). Fall back to a random port only if
+            // the preferred one is somehow taken.
+            const PREFERRED_PORT: u16 = 47613;
+            let listener = std::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT))
+                .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
                 .expect("failed to bind a loopback port for the embedded backend");
             let port = listener
                 .local_addr()
