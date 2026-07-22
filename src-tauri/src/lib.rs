@@ -108,13 +108,23 @@ fn resolve_config(handle: &AppHandle) -> Config {
     // the dev tree (absolute, via CARGO_MANIFEST_DIR) so it also works when run
     // straight from `cargo run` / `tauri dev` regardless of cwd.
     if std::env::var_os("DIST_DIR").is_none() {
-        let dist = handle
-            .path()
-            .resource_dir()
-            .ok()
-            .map(|r| r.join("frontend/dist"))
-            .filter(|p| p.join("index.html").is_file())
-            .unwrap_or_else(|| dev_path("frontend/dist"));
+        let dist = if cfg!(debug_assertions) {
+            // Dev: `beforeDevCommand` rebuilds the repo dist every run, but the
+            // Tauri resource copy under target/ is NOT refreshed when only the
+            // frontend changed (cargo caches the build) — using it would serve a
+            // stale build (blank/old screen). So point straight at the fresh
+            // repo dist.
+            dev_path("frontend/dist")
+        } else {
+            // Bundle: no repo tree; serve the copy bundled into app resources.
+            handle
+                .path()
+                .resource_dir()
+                .ok()
+                .map(|r| r.join("frontend/dist"))
+                .filter(|p| p.join("index.html").is_file())
+                .unwrap_or_else(|| dev_path("frontend/dist"))
+        };
         std::env::set_var("DIST_DIR", dist);
     }
 
