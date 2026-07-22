@@ -1,5 +1,6 @@
 import ProgressTrack from './ProgressTrack.jsx';
 import { ACCENT } from '../theme.js';
+import RangeSlider from './RangeSlider.jsx';
 
 // "sound wave" speaker icon path, matched to volume level — combined-path
 // trick (each arc subpath auto-closes on fill, forming the wave lines) per
@@ -103,13 +104,12 @@ export default function ControlBar({
               <path d={volumeIconPath(volume)} fill="currentColor" />
             </svg>
           </button>
-          <input
-            type="range"
+          <RangeSlider
             min="0"
             max="100"
             value={volume}
             onChange={(e) => onVolumeChange(Number(e.target.value))}
-            style={{ width: 70, accentColor: ACCENT }}
+            style={{ width: 70 }}
           />
         </div>
 

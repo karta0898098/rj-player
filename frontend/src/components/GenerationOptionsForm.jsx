@@ -1,4 +1,5 @@
 import { ACCENT } from '../theme.js';
+import RangeSlider from './RangeSlider.jsx';
 
 export const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3'];
 
@@ -159,14 +160,13 @@ export default function GenerationOptionsForm({
             {whisperTemperature.toFixed(1)}
           </span>
         </div>
-        <input
-          type="range"
+        <RangeSlider
           min="0"
           max="1"
           step="0.1"
           value={whisperTemperature}
           onChange={(e) => onWhisperTemperatureChange(Number(e.target.value))}
-          style={{ width: '100%', accentColor: ACCENT }}
+          style={{ width: '100%' }}
         />
       </div>
 
@@ -209,14 +209,13 @@ export default function GenerationOptionsForm({
             {vadThreshold.toFixed(2)}
           </span>
         </div>
-        <input
-          type="range"
+        <RangeSlider
           min="0"
           max="1"
           step="0.05"
           value={vadThreshold}
           onChange={(e) => onVadThresholdChange(Number(e.target.value))}
-          style={{ width: '100%', accentColor: ACCENT }}
+          style={{ width: '100%' }}
         />
       </div>
 

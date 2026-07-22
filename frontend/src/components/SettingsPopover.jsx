@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ACCENT } from '../theme.js';
+import RangeSlider from './RangeSlider.jsx';
 import GenerationOptionsForm from './GenerationOptionsForm.jsx';
 
 const SPEEDS = [0.5, 1, 1.25, 1.5, 2];
@@ -277,40 +278,37 @@ export default function SettingsPopover({
             <div style={{ fontSize: 11, fontWeight: 700, color: theme.textPrimary }}>正在編輯：{selectedLayer.label}</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 9, color: theme.textTertiary, width: 26, flexShrink: 0 }}>大小</span>
-              <input
-                type="range"
+              <RangeSlider
                 min="0.7"
                 max="1.6"
                 step="0.05"
                 value={selectedLayer.style.scale}
                 onChange={(e) => selectedLayer.setStyle({ scale: Number(e.target.value) })}
-                style={{ width: '100%', accentColor: ACCENT }}
+                style={{ width: '100%' }}
               />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 9, color: theme.textTertiary, width: 26, flexShrink: 0 }}>陰影</span>
-              <input
-                type="range"
+              <RangeSlider
                 min="0"
                 max="1"
                 step="0.05"
                 value={selectedLayer.style.shadow}
                 onChange={(e) => selectedLayer.setStyle({ shadow: Number(e.target.value) })}
-                style={{ width: '100%', accentColor: ACCENT }}
+                style={{ width: '100%' }}
               />
             </div>
           </div>
 
           <div>
             <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 5 }}>字幕背景</div>
-            <input
-              type="range"
+            <RangeSlider
               min="0"
               max="100"
               step="1"
               value={Math.round(subtitleBg * 100)}
               onChange={(e) => onSubtitleBgChange(Number(e.target.value) / 100)}
-              style={{ width: '100%', accentColor: ACCENT }}
+              style={{ width: '100%' }}
             />
           </div>
 
@@ -353,8 +351,7 @@ export default function SettingsPopover({
                 </button>
               </span>
             </div>
-            <input
-              type="range"
+            <RangeSlider
               min="-3000"
               max="3000"
               step="100"
@@ -362,7 +359,7 @@ export default function SettingsPopover({
               onChange={(e) => onSubtitleOffsetChange(Number(e.target.value))}
               onDoubleClick={() => onSubtitleOffsetChange(0)}
               title="雙擊重設為 0"
-              style={{ width: '100%', accentColor: ACCENT }}
+              style={{ width: '100%' }}
             />
             <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
               字幕太早就調＋，太晚就調－
