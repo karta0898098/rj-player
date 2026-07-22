@@ -5,3 +5,8 @@ anthropic==0.117.0
 google-genai==2.12.1
 openai>=1.40
 stable-ts==2.19.1
+# stable-ts -> openai-whisper -> numba: without this pin the resolver picks an
+# ancient numba 0.53 / llvmlite 0.36 that fails to build on Python 3.12. Pin to a
+# 3.12-compatible numba (matches the versions the repo venv runs on: numba 0.66,
+# llvmlite 0.48).
+numba>=0.60

@@ -309,7 +309,11 @@ async fn fix_install_deps(hub: &DoctorHub, config: &Config) -> Result<(), String
     let requirements = requirements_path(config);
 
     let mut mk = Command::new(&uv);
-    mk.args(["venv"]).arg(&venv).args(["--python", PY_VERSION]);
+    // --clear replaces an existing venv (e.g. a leftover from a previous failed
+    // attempt) instead of erroring "a virtual environment already exists".
+    mk.args(["venv"])
+        .arg(&venv)
+        .args(["--python", PY_VERSION, "--clear"]);
     run_streaming(hub, "install_deps", mk).await?;
 
     let mut pip = Command::new(&uv);
