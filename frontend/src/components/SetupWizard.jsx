@@ -46,6 +46,7 @@ export default function SetupWizard({ onComplete }) {
   const [keyPresent, setKeyPresent] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [checkingId, setCheckingId] = useState(null); // id of a built-in check being manually rechecked
 
   // Refs so the (once-registered) WebSocket handler reads current values.
   const stepRef = useRef(step);
@@ -101,6 +102,20 @@ export default function SetupWizard({ onComplete }) {
       // 409 (busy) / 400 / network — surface as a failed row.
       setActiveFix((cur) => (cur === fixId ? null : cur));
       setFixErrors((e) => ({ ...e, [fixId]: String(err?.message || err) }));
+    }
+  }
+
+  // Manually re-run all Doctor checks — for built-in tool checks (yt-dlp,
+  // ffmpeg) that have no `fix` action, this is the only way to retry after a
+  // slow-starting binary got reported as missing.
+  async function recheck(id) {
+    setCheckingId(id);
+    try {
+      await refresh();
+    } catch {
+      /* refresh() already surfaces loadError */
+    } finally {
+      setCheckingId((cur) => (cur === id ? null : cur));
     }
   }
 
@@ -488,6 +503,26 @@ export default function SetupWizard({ onComplete }) {
                               }}
                             >
                               重試
+                            </button>
+                          )}
+                          {st === 'missing' && !c.fix && (
+                            <button
+                              onClick={() => recheck(c.id)}
+                              disabled={!!checkingId}
+                              style={{
+                                border: 'none',
+                                cursor: checkingId ? 'default' : 'pointer',
+                                fontSize: 11,
+                                fontWeight: 700,
+                                padding: '6px 12px',
+                                borderRadius: 999,
+                                background: 'rgba(255,255,255,0.14)',
+                                color: 'rgba(255,255,255,0.94)',
+                                opacity: checkingId ? 0.5 : 1,
+                                flexShrink: 0,
+                              }}
+                            >
+                              {checkingId === c.id ? '檢查中…' : '重新檢查'}
                             </button>
                           )}
                         </div>

@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -96,9 +96,17 @@ pub async fn run(config: &Config) -> DoctorReport {
     });
 
     // 3/4. Bundled tools actually run? (No user `fix` — a missing sidecar is a
-    //      packaging bug, not something the user installs.)
-    checks.push(tool_check("ytdlp", "yt-dlp", &config.yt_dlp_path, &["--version"]).await);
-    checks.push(tool_check("ffmpeg", "ffmpeg", &config.ffmpeg_path, &["-version"]).await);
+    //      packaging bug, not something the user installs.) Run concurrently:
+    //      each already retries internally, so sequencing them would double
+    //      the worst-case wait for no benefit.
+    static YTDLP_OK: OnceLock<()> = OnceLock::new();
+    static FFMPEG_OK: OnceLock<()> = OnceLock::new();
+    let (ytdlp_check, ffmpeg_check) = tokio::join!(
+        tool_check("ytdlp", "yt-dlp", &config.yt_dlp_path, &["--version"], &YTDLP_OK),
+        tool_check("ffmpeg", "ffmpeg", &config.ffmpeg_path, &["-version"], &FFMPEG_OK)
+    );
+    checks.push(ytdlp_check);
+    checks.push(ffmpeg_check);
 
     // 5. Selected Whisper model present in the HF cache?
     let whisper_model = current_whisper_model(config);
@@ -176,22 +184,55 @@ fn model_cached(hf_home: &std::path::Path, model: &str) -> bool {
     })
 }
 
+/// Bounded per-attempt timeouts for `tool_check`, in seconds. Some bundled
+/// tools (e.g. yt-dlp's PyInstaller onefile binary) self-extract on every
+/// launch — measured 10-16s just to answer `--version` on a loaded disk — so a
+/// single short timeout falsely reports them as missing. Escalate across a
+/// couple of attempts rather than giving up after one. A killed attempt also
+/// leaves its self-extracted temp dir behind (the binary never gets to clean
+/// up), so attempt 1 is sized to rarely need killing at all.
+const TOOL_CHECK_TIMEOUTS_SECS: &[u64] = &[20, 35];
+
 /// Run `bin args…` and report whether it exits successfully (the tool exists and
-/// is runnable). Output is discarded.
-async fn tool_check(id: &'static str, label: &str, bin: &str, args: &[&str]) -> DoctorCheck {
-    let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    // Bounded: a wedged binary must not hang the whole `/api/doctor` request
-    // (which would leave the wizard's checklist empty). Timeout => not runnable.
-    let ok = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.status())
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|s| s.success())
-        .unwrap_or(false);
+/// is runnable). Output is discarded. Once a check succeeds, `cache` remembers
+/// it for the life of the process — the tool won't become uninstalled while
+/// we're running, so there's no reason to keep paying its startup cost (and
+/// timeout-kill risk) on every wizard poll or manual recheck.
+async fn tool_check(
+    id: &'static str,
+    label: &str,
+    bin: &str,
+    args: &[&str],
+    cache: &'static OnceLock<()>,
+) -> DoctorCheck {
+    let ok = if cache.get().is_some() {
+        true
+    } else {
+        let mut ok = false;
+        for &secs in TOOL_CHECK_TIMEOUTS_SECS {
+            let mut cmd = Command::new(bin);
+            cmd.args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            // Bounded: a wedged binary must not hang the whole `/api/doctor` request
+            // (which would leave the wizard's checklist empty). Timeout => retry
+            // (or, on the last attempt, not runnable).
+            ok = tokio::time::timeout(std::time::Duration::from_secs(secs), cmd.status())
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                break;
+            }
+        }
+        if ok {
+            let _ = cache.set(());
+        }
+        ok
+    };
     DoctorCheck {
         id,
         label: label.into(),
