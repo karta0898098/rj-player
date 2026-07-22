@@ -1,9 +1,9 @@
 """Tokenize stage: fugashi (MeCab + unidic-lite), self-contained (no external
 MeCab install / dictionary download needed).
 
-dsd.md §4.2 (critical invariant): ja_tokens must cover the WHOLE sentence --
-concatenating each token's `t` must reproduce `ja_text` exactly. Only tokens
-whose surface contains at least one kanji get a `reading` (hiragana).
+dsd.md §4.2 (critical invariant): tokens must cover the WHOLE sentence --
+concatenating each token's `t` must reproduce `source_text` exactly. Only
+tokens whose surface contains at least one kanji get a `reading` (hiragana).
 
 Also exposes a `Tokenizer` protocol per dsd.md §4.3 so a SudachiPy
 implementation can be swapped in later without touching the pipeline.
@@ -20,7 +20,7 @@ _KANJI_RE = re.compile(r"[一-鿿㐀-䶿]")
 
 
 class Token(dict):
-    """A ja_tokens entry: {"t": surface} or {"t": surface, "reading": hiragana}."""
+    """A tokens entry: {"t": surface} or {"t": surface, "reading": hiragana}."""
 
 
 class Tokenizer(Protocol):

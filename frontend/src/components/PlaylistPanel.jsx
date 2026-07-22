@@ -1,11 +1,16 @@
 import { useState } from 'react';
 import { PIPELINE_STATUS_LABELS, formatTime } from '../utils.js';
+import { thumbnailUrl } from '../api.js';
 
-// 56×32 rounded "縮圖" placeholder (design handoff §側邊欄) — the backend
-// doesn't serve real per-video thumbnail images (VideoSummary has no
-// thumbnail URL), so this renders a themed placeholder tile with a small
-// play glyph instead of an actual <img>.
-function ThumbnailPlaceholder({ theme }) {
+// 56×32 rounded "縮圖": the real poster JPEG (GET /media/:id/thumbnail, fetched
+// at download time) when the video has one, falling back to a themed
+// placeholder tile with a small play glyph for items that predate the
+// thumbnail feature, have none, or whose first GET /api/videos poll hasn't
+// landed yet (`has_thumbnail` still undefined).
+function Thumbnail({ theme, videoId, hasThumbnail }) {
+  const [failed, setFailed] = useState(false);
+  const showImg = hasThumbnail && !failed;
+
   return (
     <div
       style={{
@@ -13,22 +18,32 @@ function ThumbnailPlaceholder({ theme }) {
         height: 32,
         borderRadius: 6,
         flexShrink: 0,
+        overflow: 'hidden',
         background: theme.segBg,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
       }}
     >
-      <div
-        style={{
-          width: 0,
-          height: 0,
-          borderTop: '5px solid transparent',
-          borderBottom: '5px solid transparent',
-          borderLeft: `7px solid ${theme.textTertiary}`,
-          marginLeft: 2,
-        }}
-      />
+      {showImg ? (
+        <img
+          src={thumbnailUrl(videoId)}
+          alt=""
+          onError={() => setFailed(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 0,
+            height: 0,
+            borderTop: '5px solid transparent',
+            borderBottom: '5px solid transparent',
+            borderLeft: `7px solid ${theme.textTertiary}`,
+            marginLeft: 2,
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -114,7 +129,7 @@ export default function PlaylistPanel({ theme, items, activeVideoId, onSelect, o
             >
               ⋮⋮
             </span>
-            <ThumbnailPlaceholder theme={theme} />
+            <Thumbnail theme={theme} videoId={item.video_id} hasThumbnail={item.has_thumbnail} />
             {item.is_music_video && <span title="音樂 MV">🎵</span>}
             <div style={{ minWidth: 0, flex: 1 }}>
               <div

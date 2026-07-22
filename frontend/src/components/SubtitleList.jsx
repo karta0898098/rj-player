@@ -2,6 +2,30 @@ import { useEffect, useRef, useState } from 'react';
 import { ACCENT } from '../theme.js';
 import { findActiveCue, formatTime, formatPipelineStatusLabel, PIPELINE_ACTIVE_STATUSES } from '../utils.js';
 
+// Provenance-badge label/tooltip maps (dsd.md §12.6 B5.5) — `source`: 'cc'
+// (manual source-language CC) | 'align' (forced alignment to reference
+// lyrics) | 'asr' (Whisper); `target_source`: 'cc' (manual Chinese CC merged
+// in) | 'llm' (machine-translated). `official: true` gets the accent tint
+// (cc/align — no AI involved in that layer); 'asr'/'llm' stay neutral.
+const SOURCE_CHIP_INFO = {
+  cc: { label: '官方字幕', title: '字幕來源：影片內建人工字幕（未經 AI 辨識）', official: true },
+  align: { label: '歌詞對齊', title: '字幕來源：依參考歌詞做時間軸對齊（未經 AI 辨識）', official: true },
+  asr: { label: 'AI 辨識', title: '字幕來源：AI 語音辨識', official: false },
+};
+
+const TARGET_CHIP_INFO = {
+  cc: { label: '官方翻譯', title: '翻譯來源：官方中文字幕（未經 AI 翻譯）', official: true },
+  llm: { label: 'AI 翻譯', title: '翻譯來源：AI 翻譯', official: false },
+};
+
+function getSourceChipInfo(source) {
+  return SOURCE_CHIP_INFO[source] || null;
+}
+
+function getTargetChipInfo(targetSource) {
+  return TARGET_CHIP_INFO[targetSource] || null;
+}
+
 // Subtitle-list body — one of two tabs hosted inside SidebarPanel.jsx (the
 // other being PlaylistPanel.jsx); SidebarPanel owns the shared width/
 // collapse/tab-header chrome, this component owns only the scrollable cue
@@ -13,8 +37,14 @@ import { findActiveCue, formatTime, formatPipelineStatusLabel, PIPELINE_ACTIVE_S
 // parent to be `position: relative` -- the "回到目前播放" button anchors to it.
 //
 // Editing: double-click a cue's 日文 or 中文 line to edit it in place;
-// Enter/blur saves via onEditCue(cueId, {ja_text?|zh_text?}), Escape cancels.
+// Enter/blur saves via onEditCue(cueId, {source_text?|target_text?}), Escape cancels.
 // Export: onExport(format) is called for 'srt' | 'lrc' | 'txt'.
+//
+// Provenance badges (dsd.md §12.6 B5.5): `source`/`targetSource` come from
+// the subtitle doc's `source`/`target_source` fields (App.jsx's docSource/
+// docTargetSource, captured in loadSubtitles) and are rendered as small
+// chips in the export bar so the user can tell official captions/alignment
+// apart from AI-generated ASR/translation at a glance.
 export default function SubtitleList({
   theme,
   cues,
@@ -23,6 +53,8 @@ export default function SubtitleList({
   subtitleStatus,
   subtitleStage,
   subtitlePct,
+  source,
+  targetSource,
   onSeekToCue,
   onEditCue,
   onExport,
@@ -88,15 +120,15 @@ export default function SubtitleList({
   function startEdit(cue, field) {
     if (!onEditCue) return;
     setPinned(false);
-    setEdit({ cueId: cue.id, field, value: field === 'ja' ? cue.ja_text : cue.zh_text || '' });
+    setEdit({ cueId: cue.id, field, value: field === 'ja' ? cue.source_text : cue.target_text || '' });
   }
 
   function commitEdit() {
     if (!edit) return;
     const cue = cues.find((c) => c.id === edit.cueId);
-    const original = cue ? (edit.field === 'ja' ? cue.ja_text : cue.zh_text || '') : '';
+    const original = cue ? (edit.field === 'ja' ? cue.source_text : cue.target_text || '') : '';
     if (edit.value !== original) {
-      const patch = edit.field === 'ja' ? { ja_text: edit.value } : { zh_text: edit.value };
+      const patch = edit.field === 'ja' ? { source_text: edit.value } : { target_text: edit.value };
       onEditCue(edit.cueId, patch);
     }
     setEdit(null);
@@ -156,6 +188,33 @@ export default function SubtitleList({
     );
   }
 
+  // Small pill for a provenance chip — `official` (cc/align, no AI in that
+  // layer) gets a faint accent tint; AI-derived (asr/llm) stays neutral
+  // segBg, matching the existing 匯出 buttons' look.
+  function renderProvenanceChip(info, key) {
+    if (!info) return null;
+    return (
+      <span
+        key={key}
+        title={info.title}
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          padding: '3px 7px',
+          borderRadius: 6,
+          background: info.official ? 'rgba(60,179,113,0.16)' : theme.segBg,
+          color: info.official ? 'rgba(60,179,113,0.95)' : theme.textSecondary,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {info.label}
+      </span>
+    );
+  }
+
+  const sourceChipInfo = getSourceChipInfo(source);
+  const targetChipInfo = getTargetChipInfo(targetSource);
+
   return (
     <>
       {hasCues && onExport && (
@@ -169,6 +228,8 @@ export default function SubtitleList({
             borderBottom: `1px solid ${theme.hairline}`,
           }}
         >
+          {renderProvenanceChip(sourceChipInfo, 'source-chip')}
+          {renderProvenanceChip(targetChipInfo, 'target-chip')}
           <span style={{ fontSize: 10, color: theme.textTertiary }}>匯出</span>
           {['srt', 'lrc', 'txt'].map((fmt) => (
             <button
@@ -255,10 +316,10 @@ export default function SubtitleList({
                         wordBreak: 'break-word',
                       }}
                     >
-                      {cue.ja_text}
+                      {cue.source_text}
                     </div>
                   )}
-                  {cue.zh_text
+                  {cue.target_text
                     ? renderEditable(
                         cue,
                         'zh',
@@ -271,7 +332,7 @@ export default function SubtitleList({
                             wordBreak: 'break-word',
                           }}
                         >
-                          {cue.zh_text}
+                          {cue.target_text}
                         </div>
                       )
                     : onEditCue &&
@@ -290,7 +351,7 @@ export default function SubtitleList({
                   {/* When adding a translation to a cue that has none, the
                       textarea is rendered here (renderEditable's editing branch
                       only fires for the existing-zh path above). */}
-                  {edit && edit.cueId === cue.id && edit.field === 'zh' && !cue.zh_text && (
+                  {edit && edit.cueId === cue.id && edit.field === 'zh' && !cue.target_text && (
                     <textarea
                       ref={editRef}
                       rows={2}

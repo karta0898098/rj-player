@@ -50,18 +50,19 @@ export default function VideoStage({
   onTimeUpdate,
   onLoadedMetadata,
   onEnded,
+  onCanPlay,
   loadStatus, // 'idle' | 'connecting' | 'downloading' | 'downloaded' | 'error'
   downloadPct,
   stageLabel,
   errorMessage,
   currentTime,
   cues,
-  subJP,
-  subCN,
-  subRomaji,
-  jpStyle,
-  cnStyle,
-  romajiStyle,
+  subSource,
+  subTarget,
+  subPhonetic,
+  sourceStyle,
+  targetStyle,
+  phoneticStyle,
   subtitleOffsetMs,
   subtitleBg,
   // B3.4 — AI pipeline progress, independent of `loadStatus` (the video is
@@ -204,6 +205,7 @@ export default function VideoStage({
           onLoadedMetadata={onLoadedMetadata}
           onDurationChange={onLoadedMetadata}
           onEnded={onEnded}
+          onCanPlay={onCanPlay}
           style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain', background: '#000' }}
         />
       ) : (
@@ -346,12 +348,12 @@ export default function VideoStage({
       <SubtitleOverlay
         cues={cues}
         currentTime={currentTime}
-        subJP={subJP}
-        subCN={subCN}
-        subRomaji={subRomaji}
-        jpStyle={jpStyle}
-        cnStyle={cnStyle}
-        romajiStyle={romajiStyle}
+        subSource={subSource}
+        subTarget={subTarget}
+        subPhonetic={subPhonetic}
+        sourceStyle={sourceStyle}
+        targetStyle={targetStyle}
+        phoneticStyle={phoneticStyle}
         subtitleOffsetMs={subtitleOffsetMs}
         subtitleBg={subtitleBg}
         isFullscreen={isFullscreen}

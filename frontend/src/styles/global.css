@@ -73,3 +73,20 @@ button {
 .subtitle-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(127, 127, 127, 0.65);
 }
+
+/* Video-library grid cards (LibraryView.jsx). The action overlay on the
+   thumbnail (play / add-to-playlist / regenerate / delete) is hidden until
+   the card is hovered, so the poster stays clean while browsing. */
+.library-card .library-card-actions {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.library-card:hover .library-card-actions {
+  opacity: 1;
+}
+.library-card {
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.library-card:hover {
+  transform: translateY(-2px);
+}

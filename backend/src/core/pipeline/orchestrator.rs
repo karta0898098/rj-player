@@ -40,8 +40,11 @@ fn status_for_stage(stage: Stage) -> VideoStatus {
 
 /// Run (or skip, on a cache hit) the subtitle pipeline for one video.
 ///
-/// `source_lang`/`target_lang` are fixed to `ja`/`zh-TW` per the current
-/// scope (dsd.md's `generate_subtitles` example params); `whisper_model`
+/// `source_lang` is read from the video's persisted `meta.source_lang`
+/// (dsd.md §12.2/§12.5), defaulting to `"ja"` when absent -- old
+/// `meta.json` files and any caller that never set it -- so today's
+/// Japanese-only behavior stays byte-identical. `target_lang` stays fixed
+/// to `zh-TW` per the current scope. `whisper_model`
 /// and `whisper_temperature` are the *config* defaults (`WHISPER_MODEL` /
 /// `WHISPER_TEMPERATURE`) so they can be swapped without a rebuild.
 /// `overrides` carries any per-request generation-knob overrides from
@@ -144,8 +147,9 @@ pub async fn run_pipeline(
         .clone()
         .filter(|lyrics| !lyrics.trim().is_empty());
 
-    // Manual Japanese CC, fetched at download time (`YtDlp::fetch_manual_ja_subs`)
-    // when the uploader supplied one. Passed through whenever it exists,
+    // Manual source-language CC, fetched at download time
+    // (`YtDlp::fetch_captions`) when the uploader supplied one for
+    // this video's `source_lang`. Passed through whenever it exists,
     // regardless of `reference_lyrics` -- `ai/worker.py` enforces the actual
     // precedence (reference_lyrics > CC > Whisper ASR), so this orchestrator
     // doesn't need to duplicate that decision.
@@ -155,10 +159,22 @@ pub async fn run_pipeline(
         None
     };
 
+    // Manual target-language (Chinese) CC, fetched at download time
+    // (`YtDlp::fetch_captions`) when the uploader supplied one (dsd.md
+    // §12.4/§12.5/§12.7 B5.5). When present, `ai/worker.py` time-overlap-
+    // merges it onto the source timeline instead of calling the LLM, so a
+    // video with both a source CC and a Chinese CC needs zero ASR AND zero
+    // LLM calls.
+    let target_cc_path = if store.target_cc_exists(video_id) {
+        Some(store.target_cc_path(video_id).to_string_lossy().to_string())
+    } else {
+        None
+    };
+
     let params = GenerateSubtitlesParams {
         video_id: video_id.to_string(),
         audio_path: audio_path.to_string_lossy().to_string(),
-        source_lang: "ja".to_string(),
+        source_lang: meta.source_lang.clone().unwrap_or_else(|| "ja".to_string()),
         whisper_model: effective_whisper_model,
         whisper_temperature: effective_whisper_temperature,
         translate: true,
@@ -173,6 +189,7 @@ pub async fn run_pipeline(
         },
         reference_lyrics: effective_reference_lyrics,
         cc_path,
+        target_cc_path,
     };
 
     let result = rpc
@@ -459,7 +476,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::core::domain::subtitle::JaToken;
+    use crate::core::domain::subtitle::Token;
     use crate::core::domain::{Cue, VideoMeta};
 
     fn stub_worker_path() -> String {
@@ -533,7 +550,7 @@ mod tests {
     /// the whole point (don't lose ASR work to a stuck/slow translate). The
     /// `slow_translate` stub mode sleeps 200ms between emitting the
     /// snapshot and its final result, giving this test a window to observe
-    /// the snapshot (zh_text still null) before the job completes.
+    /// the snapshot (target_text still null) before the job completes.
     #[tokio::test]
     async fn pretranslate_snapshot_is_persisted_before_the_job_finishes() {
         let tmp = TempDataDir::new();
@@ -564,7 +581,7 @@ mod tests {
         let mut saw_snapshot = false;
         for _ in 0..50 {
             if let Ok(Some(doc)) = store.load_subtitles("slowvideo001").await {
-                if !doc.cues.is_empty() && doc.cues[0].zh_text.is_none() {
+                if !doc.cues.is_empty() && doc.cues[0].target_text.is_none() {
                     saw_snapshot = true;
                     break;
                 }
@@ -573,7 +590,7 @@ mod tests {
         }
         assert!(
             saw_snapshot,
-            "expected the pre-translate snapshot (zh_text: null) to be persisted \
+            "expected the pre-translate snapshot (target_text: null) to be persisted \
              to subtitles.json before the job finished"
         );
 
@@ -584,7 +601,7 @@ mod tests {
             .await
             .unwrap()
             .expect("final subtitles.json should exist");
-        assert_eq!(final_doc.cues[0].zh_text.as_deref(), Some("你好"));
+        assert_eq!(final_doc.cues[0].target_text.as_deref(), Some("你好"));
         let meta = store.load_meta("slowvideo001").await.unwrap().unwrap();
         assert_eq!(meta.status, VideoStatus::Ready);
     }
@@ -607,16 +624,17 @@ mod tests {
                 id: 0,
                 start_ms: 0,
                 end_ms: 2500,
-                ja_text: "こんにちは".to_string(),
-                ja_tokens: vec![JaToken {
+                source_text: "こんにちは".to_string(),
+                tokens: vec![Token {
                     t: "こんにちは".to_string(),
                     reading: None,
                 }],
-                romaji: "konnichiwa".to_string(),
-                zh_text: None,
+                phonetic: "konnichiwa".to_string(),
+                target_text: None,
             }],
             translate_partial: Some(true),
             source: Some("asr".to_string()),
+            target_source: None,
         };
         store.save_subtitles(&existing).await.unwrap();
 
@@ -627,11 +645,11 @@ mod tests {
         assert_eq!(meta.last_error, None);
 
         let doc = store.load_subtitles("retranslate01").await.unwrap().unwrap();
-        // ja_text/ja_tokens/romaji/timing pass through untouched -- only
-        // zh_text (the stub's canned "STUB:<ja_text>") changes.
-        assert_eq!(doc.cues[0].ja_text, "こんにちは");
-        assert_eq!(doc.cues[0].romaji, "konnichiwa");
-        assert_eq!(doc.cues[0].zh_text.as_deref(), Some("STUB:こんにちは"));
+        // source_text/tokens/phonetic/timing pass through untouched -- only
+        // target_text (the stub's canned "STUB:<source_text>") changes.
+        assert_eq!(doc.cues[0].source_text, "こんにちは");
+        assert_eq!(doc.cues[0].phonetic, "konnichiwa");
+        assert_eq!(doc.cues[0].target_text.as_deref(), Some("STUB:こんにちは"));
     }
 
     #[tokio::test]
@@ -691,6 +709,63 @@ mod tests {
         let meta = store.load_meta("ccvideo0001").await.unwrap().unwrap();
         assert_eq!(meta.status, VideoStatus::Ready);
         assert_eq!(meta.last_error, None);
+
+        // No target (Chinese) CC was written for this video, so the stub's
+        // target_source_kwargs stays empty and the doc's target_source must
+        // be absent (dsd.md §12.4/§12.5/§12.7, B5.5 -- the flip side of
+        // `target_cc_reuse_marks_target_source_cc` below).
+        let doc = store.load_subtitles("ccvideo0001").await.unwrap().unwrap();
+        assert_eq!(doc.target_source, None);
+    }
+
+    /// dsd.md §12.4/§12.5/§12.7 (B5.5): when a manual target-language
+    /// (Chinese) CC file exists for the video, `run_pipeline` must compute
+    /// `target_cc_path` (via `store.target_cc_exists`/`store.target_cc_path`)
+    /// and thread it into `GenerateSubtitlesParams`. The stub worker tags
+    /// the result doc `target_source: "cc"` whenever it sees a non-empty
+    /// `target_cc_path` in the request params (see stub_worker.py), so
+    /// asserting that field on the saved doc proves the path threaded
+    /// through end to end.
+    #[tokio::test]
+    async fn target_cc_reuse_marks_target_source_cc() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "targetcc001", VideoStatus::Downloaded).await;
+        assert!(!store.target_cc_exists("targetcc001"));
+
+        tokio::fs::write(
+            store.target_cc_path("targetcc001"),
+            "1\n00:00:00,000 --> 00:00:01,000\n你好\n\n",
+        )
+        .await
+        .unwrap();
+        assert!(store.target_cc_exists("targetcc001"));
+
+        run_pipeline(
+            &store,
+            &hub,
+            &rpc,
+            "targetcc001",
+            "small",
+            0.0,
+            false,
+            &PipelineOverrides::default(),
+        )
+        .await;
+
+        let meta = store.load_meta("targetcc001").await.unwrap().unwrap();
+        assert_eq!(meta.status, VideoStatus::Ready);
+        assert_eq!(meta.last_error, None);
+
+        let doc = store
+            .load_subtitles("targetcc001")
+            .await
+            .unwrap()
+            .expect("subtitles.json should have been written");
+        assert_eq!(doc.target_source.as_deref(), Some("cc"));
     }
 
     #[tokio::test]
@@ -713,6 +788,7 @@ mod tests {
             cues: vec![],
             translate_partial: None,
             source: None,
+            target_source: None,
         };
         store.save_subtitles(&doc).await.unwrap();
 
@@ -776,5 +852,49 @@ mod tests {
         let meta = store.load_meta("noaudiovid1").await.unwrap().unwrap();
         assert_eq!(meta.status, VideoStatus::PipelineFailed);
         assert!(meta.last_error.unwrap().contains("audio.wav"));
+    }
+
+    /// dsd.md §12.2/§12.5/§12.7 (B5.2): a video whose `meta.source_lang` is
+    /// `Some("en")` must have that value flow all the way through
+    /// `GenerateSubtitlesParams.source_lang` -> the (stubbed) worker's
+    /// `params.source_lang` -> `doc.language_source`, and the worker's
+    /// skip-reading simulation (stub_worker.py) must come back through as
+    /// empty `tokens` on the assembled cues. This is the proof that
+    /// `run_pipeline` no longer hardcodes `"ja"`.
+    #[tokio::test]
+    async fn english_source_lang_flows_through_and_skips_reading() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "englishvid1", VideoStatus::Downloaded).await;
+        let mut meta = store.load_meta("englishvid1").await.unwrap().unwrap();
+        meta.source_lang = Some("en".to_string());
+        store.save_meta(&meta).await.unwrap();
+
+        run_pipeline(
+            &store,
+            &hub,
+            &rpc,
+            "englishvid1",
+            "small",
+            0.0,
+            false,
+            &PipelineOverrides::default(),
+        )
+        .await;
+
+        let meta = store.load_meta("englishvid1").await.unwrap().unwrap();
+        assert_eq!(meta.status, VideoStatus::Ready);
+        assert_eq!(meta.last_error, None);
+
+        let doc = store
+            .load_subtitles("englishvid1")
+            .await
+            .unwrap()
+            .expect("subtitles.json should have been written");
+        assert_eq!(doc.language_source, "en");
+        assert!(doc.cues[0].tokens.is_empty());
     }
 }

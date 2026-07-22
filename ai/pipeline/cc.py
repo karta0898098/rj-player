@@ -1,20 +1,28 @@
-"""Manual Japanese CC stage: parse an official closed-caption file into the
+"""Manual CC stage: parse an official closed-caption file into the
 same (segments, duration_ms) shape `asr.transcribe`/`align.align` return.
 
 Used INSTEAD OF `asr.transcribe` (and instead of `align.align`, unless the
 caller also supplied `reference_lyrics`, which wins -- see `worker.py`'s
 precedence) when the downloaded video has a **manual** (uploader-supplied,
-not auto-generated) Japanese CC track -- `backend/src/core/downloader/
-ytdlp.rs`'s `fetch_manual_ja_subs` fetches it at download time, converted to
-SRT, and normalized to `<video_dir>/cc.srt`. A manual CC track already has
-correct text AND correct timing, so there's nothing for ASR/alignment to do
-here -- just parse the file and clean each cue's text.
+not auto-generated) source-language CC track -- `backend/src/core/
+downloader/ytdlp.rs`'s `fetch_captions` fetches it at download time,
+converted to SRT, and normalized to `<video_dir>/cc.srt`. A manual CC track
+already has correct text AND correct timing, so there's nothing for
+ASR/alignment to do here -- just parse the file and clean each cue's text.
 
 Hand-written SRT parser (no new dependency -- SRT is simple: index /
 `HH:MM:SS,mmm --> HH:MM:SS,mmm` / text lines / blank-line separator). Also
 tolerates `.`-separated milliseconds (VTT's convention) and a leading
 `WEBVTT` header, so a VTT-ish file parses too, even though in practice
 `ytdlp.rs` always converts to real SRT via `--convert-subs srt`.
+
+Also home to `merge_target_captions` (dsd.md §12.4/§12.5/§12.7, B5.5): the
+time-overlap merge that lets a manual target-language (Chinese) CC track
+stand in for the LLM translate stage. The source track owns the timeline --
+v1 is deliberately the conservative approach (dsd.md §12.4's "v1 保守法"):
+each source cue collects whichever target segments overlap it in time and
+joins their text, rather than attempting precise dual-track cue alignment
+(left for a future §12.8).
 """
 from __future__ import annotations
 
@@ -178,3 +186,46 @@ def load_cc(cc_path: str, audio_path: Optional[str] = None) -> tuple[list[Segmen
         duration_ms = fallback_duration_ms
 
     return segments, duration_ms
+
+
+def _overlap_ms(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    """Milliseconds of overlap between `[a_start, a_end)` and `[b_start,
+    b_end)`, clamped to a non-negative value (0 when the intervals don't
+    overlap at all)."""
+    return max(0, min(a_end, b_end) - max(a_start, b_start))
+
+
+def merge_target_captions(
+    source_cues: list[dict], target_segments: list[Segment]
+) -> list[Optional[str]]:
+    """B5.5's time-overlap merge (dsd.md §12.4/§12.5/§12.7): stand a manual
+    target-language (Chinese) CC track in for the LLM translate stage.
+
+    `source_cues` is a list of dicts with (at least) `start_ms`/`end_ms` --
+    the source track's timeline, which this v1 merge treats as authoritative
+    (dsd.md §12.4's "v1 保守法": the source track owns the timeline; precise
+    dual-track alignment is deferred to §12.8). `target_segments` is the
+    parsed target CC (`load_cc`'s return value's first element).
+
+    For each source cue, every target segment whose `[start_ms, end_ms)`
+    overlaps it by more than 0ms is collected, sorted by `start_ms`, and
+    joined with a single space -- covers the common case of one source cue
+    spanning two shorter target segments. A source cue with no overlapping
+    target segment gets `None`, signalling "fall back to LLM translation (or
+    leave blank)" to the caller.
+
+    Returns a list the same length as `source_cues`, aligned 1:1.
+    """
+    merged: list[Optional[str]] = []
+    for cue in source_cues:
+        overlapping = [
+            seg
+            for seg in target_segments
+            if _overlap_ms(cue["start_ms"], cue["end_ms"], seg["start_ms"], seg["end_ms"]) > 0
+        ]
+        if not overlapping:
+            merged.append(None)
+            continue
+        overlapping.sort(key=lambda seg: seg["start_ms"])
+        merged.append(" ".join(seg["text"] for seg in overlapping))
+    return merged

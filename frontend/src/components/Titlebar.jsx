@@ -23,6 +23,11 @@ export default function Titlebar({
   showOptions,
   onToggleOptions,
   optionsSlot,
+  // Video-library view toggle (swaps the whole body between the player and
+  // LibraryView). Highlighted while the library is open; the glyph doubles as
+  // a "back to player" affordance in that state.
+  showLibrary,
+  onToggleLibrary,
 }) {
   return (
     <div
@@ -49,6 +54,37 @@ export default function Titlebar({
       >
         {videoTitle || '尚未載入影片'}
       </div>
+
+      {onToggleLibrary && (
+        <button
+          type="button"
+          onClick={onToggleLibrary}
+          title={showLibrary ? '返回播放器' : '影片庫'}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            flexShrink: 0,
+            height: 32,
+            padding: '0 11px',
+            borderRadius: 9,
+            border: 'none',
+            cursor: 'pointer',
+            background: showLibrary ? ACCENT : theme.chipBg,
+            color: showLibrary ? '#fff' : theme.textSecondary,
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="4" width="7" height="7" rx="1.4" stroke="currentColor" strokeWidth="1.9" />
+            <rect x="14" y="4" width="7" height="7" rx="1.4" stroke="currentColor" strokeWidth="1.9" />
+            <rect x="3" y="15" width="7" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.9" />
+            <rect x="14" y="15" width="7" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.9" />
+          </svg>
+          {showLibrary ? '播放器' : '影片庫'}
+        </button>
+      )}
 
       <div
         title="切換深色／淺色外觀"

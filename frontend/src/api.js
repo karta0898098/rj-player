@@ -19,10 +19,17 @@ async function parseErrorMessage(res) {
  * form. `options` is the same camelCase settings shape used by
  * regeneratePipeline (see buildGenerationSettingsPayload in utils.js) so
  * there's one shaping function for both call sites; `isMusicVideo` defaults
- * to false. Omitting `options` entirely still works — every field is
- * optional backend-side and falls back to config/asr.py defaults.
+ * to false. `sourceLang` (dsd.md §12.5/§12.7 B5.3) is the source-language
+ * selector's value ('ja' | 'en'), defaulting to 'ja' — the backend's
+ * CreateVideoRequest.source_lang already defaults to 'ja' server-side, so
+ * this default just keeps the two in sync. `maxHeight` (the per-video
+ * quality picker) defaults to 1080, matching the backend's own default cap
+ * (`config.yt_dlp_format`) so an untouched picker reproduces today's
+ * behavior; `0` means uncapped ("best available"). Omitting `options`
+ * entirely still works — every field is optional backend-side and falls
+ * back to config/asr.py defaults.
  */
-export async function createVideo(url, options = {}, isMusicVideo = false) {
+export async function createVideo(url, options = {}, isMusicVideo = false, sourceLang = 'ja', maxHeight = 1080) {
   const res = await fetch('/api/videos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -30,6 +37,8 @@ export async function createVideo(url, options = {}, isMusicVideo = false) {
       url,
       auto_pipeline: true,
       is_music_video: isMusicVideo,
+      source_lang: sourceLang,
+      max_height: maxHeight,
       ...buildGenerationSettingsPayload(options),
     }),
   });
@@ -91,6 +100,19 @@ export async function cancelQueueItem(id) {
   }
 }
 
+/**
+ * DELETE /api/videos/:id — remove a video from the library, deleting its
+ * whole on-disk folder (mp4/audio/subtitles/thumbnail/meta) to reclaim
+ * space. 409s while the video is actively downloading or running its
+ * pipeline (cancel/wait first). 204 on success (nothing to parse).
+ */
+export async function deleteVideo(id) {
+  const res = await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+}
+
 /** WS URL for GET /api/videos/:id/events (dsd.md §3.2). */
 export function videoEventsUrl(id) {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -100,6 +122,15 @@ export function videoEventsUrl(id) {
 /** <video src> for GET /media/:id/video (Range-served mp4, dsd.md §3.1). */
 export function mediaUrl(id) {
   return `/media/${id}/video`;
+}
+
+/**
+ * <img src> for GET /media/:id/thumbnail (poster JPEG fetched at download
+ * time). 404s when the video has no thumbnail (predates the feature, or none
+ * was fetchable) — callers should render a placeholder on the <img> onError.
+ */
+export function thumbnailUrl(id) {
+  return `/media/${id}/thumbnail`;
 }
 
 /**
@@ -160,10 +191,10 @@ export async function getSubtitles(id) {
 
 /**
  * PUT /api/videos/:id/subtitles/cues/:cueId — persist an in-place manual edit
- * to one cue's text. `patch` is `{ ja_text?, zh_text? }`; only the field being
- * edited is sent. Editing ja_text clears that cue's furigana/romaji
- * server-side (they'd be stale). Returns the updated Cue so the caller can
- * refresh in place without a full refetch.
+ * to one cue's text. `patch` is `{ source_text?, target_text? }`; only the
+ * field being edited is sent. Editing source_text clears that cue's
+ * furigana/romaji server-side (they'd be stale). Returns the updated Cue so
+ * the caller can refresh in place without a full refetch.
  */
 export async function patchCue(id, cueId, patch) {
   const res = await fetch(`/api/videos/${id}/subtitles/cues/${cueId}`, {

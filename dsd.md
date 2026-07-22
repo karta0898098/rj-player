@@ -387,4 +387,121 @@ Frontend        Rust(http)      JobQueue        downloader        PyWorker      
 - **一個 Phase 內**：後端 batch 先落地並用 `curl`/`wscat` 驗，再上前端 batch → 前端永遠對著「已能動的 API」開發。
 - **跨 Phase 的最小可用點**：B1.6（能播）、B2.6（有字幕檔）、B3.4（畫面上看到字幕）—— 這三個是最有感的里程碑，適合各自停下來實際用一陣子再往下。
 - **風險先行**：B2.2（Whisper 日文辨識效果）與 B2.5（翻譯品質/成本）是 spec §7 最大未知數，建議在 Phase 2 早期就拿真實影片實測，結果會回頭影響模型/LLM 選型。
+
+---
+
+## 12. 多語來源與 CC 優先序（實現 spec §6 P2「支援其他來源語言」）
+
+### 12.0 範圍與裁定
+
+把「來源語言只有日文、目標只有中文」這個貫穿全 stack 的假設收斂成**語言中立 + profile 分流**，並讓 CC 從單一 `ja` 軌泛化成「多軌 + 優先序」，使部分影片能同時省掉 ASR 與 LLM 翻譯。本階段交付兩種來源：
+
+- **日文** → 三層：原文（漢字上 ruby 假名）＋ 羅馬拼音 ＋ 中文（現況，不退步）
+- **英文** → 兩層：原文 ＋ 中文（中英雙字幕）
+
+兩項已定案的裁定（其餘留白見 §12.8）：
+
+| 議題 | 裁定 | 理由 |
+|---|---|---|
+| Cue schema 如何中立化 | **欄位改名 + `serde(alias)` 保留舊名** | 名字不再說謊；舊 `subtitles.json` 靠 alias 零遷移載入，不用重跑昂貴的 ASR |
+| 自動生成 CC（auto-subs）是否納入 | **只用人工 CC，維持現狀** | 沿用 `--write-subs`（非 `--write-auto-subs`）的品質底線；命中率換品質，日後用開關放寬（§12.8） |
+
+### 12.1 Cue schema 中立化（改名 + alias）
+
+`Cue` 欄位從日文專屬改為語言中立，每個新欄位掛 `#[serde(alias = "舊名")]`，舊快取原地相容（不 bump `SUBTITLE_DOC_VERSION`，因為 alias 已讓舊 doc 正常反序列化，無需觸發 cache-miss 重生）：
+
+```jsonc
+// 之前（ja 專屬）→ 之後（中立，括號為 serde alias）
+{
+  "ja_text":   "…",   // → "source_text"   (alias "ja_text")
+  "ja_tokens": [ … ],  // → "tokens"        (alias "ja_tokens")；EN 為 []
+  "romaji":    "…",   // → "phonetic"      (alias "romaji")；EN 為 null/省略
+  "zh_text":   "…"    // → "target_text"   (alias "zh_text")
+}
 ```
+
+`SubtitleDoc` 沿用既有 `language_source` / `target_lang`（前端據此決定渲染幾層），並新增一個非破壞欄位標示翻譯來源，供徽章顯示：
+
+- `source`（既有）：`"asr" | "cc" | "align"` — 誰產生原文/時間軸
+- `target_source`（新增，`serde(default)`）：`"llm" | "cc"` — 中文層來自 AI 翻譯或官方字幕
+
+> `Cue.target_text` 維持 `Option`（`null` = 該 cue 尚無譯文），沿用 §7 的 translate-partial 降級語意。`tokens` 空陣列、`phonetic` 為 `None` 即代表「這個語言沒有讀音層」，前端不需要另外的旗標。
+
+### 12.2 語言 Profile 矩陣
+
+pipeline 依「來源語言」查一張 profile 表，決定跑哪些 stage、產生哪些層：
+
+| source | ASR 語言 | 讀音 stage（tokenize + phonetic） | 翻譯 | 產生的層 |
+|---|---|---|---|---|
+| `ja` 日文 | ja | ✅ fugashi 注音 → pykakasi 羅馬拼音 | zh-TW | 原文(ruby)・羅馬拼音・中文 |
+| `en` 英文 | en | ❌ 跳過（`tokens=[]`, `phonetic=None`） | zh-TW | 原文・中文 |
+| *(未來 ko…)* | ko | 視語言而定 | zh-TW | 原文・中文 |
+
+新增來源語言 = 表加一列 + 該語言的讀音實作（可選），pipeline 骨架不動。
+
+### 12.3 Pipeline 依 profile 分流（`ai/worker.py`）
+
+現況「ASR → 一定 tokenize → 一定 romaji → translate」改為讀 profile：只有 `profile.reading == true` 才跑 tokenize/phonetic 兩段；否則 ASR 後直接進 translate → assemble。ASR 段的優先序也一併泛化成「任何來源語言」而非只認 `ja`（見 §12.4）。stage 名稱與 WS 事件維持不變（`asr/tokenize/romaji/translate/assemble`），狀態機（§5.3）不動。
+
+### 12.4 CC 多軌抓取 + 優先序 resolver
+
+**抓取**：`downloader/ytdlp.rs` 的 `fetch_manual_ja_subs` 泛化為 `fetch_captions`——**一次** `yt-dlp --write-subs` pass，把 `--sub-langs` 從 `ja,ja-orig` 放寬成「來源語（含 `-orig`）＋ 中文各變體（`zh-Hant,zh-TW,zh,zh-Hans`）」，各軌落地為 `captions/<lang>.srt` 並寫一份 `captions.json` manifest（`[{lang, kind:"manual", path}]`）。維持人工 CC only。
+
+**resolver（兩個獨立決策）**：
+
+① **來源軌**（決定原文＋時間軸，命中即**略過 ASR**）
+```
+reference_lyrics(音樂,既有) ＞ 人工 CC(來源語) ＞ Whisper ASR
+```
+② **目標軌**（決定中文層，命中即**略過 LLM 翻譯**）← 「有些甚至不用翻譯」
+```
+人工 CC(zh-Hant / zh-TW) ＞ 人工 CC(zh 泛) ＞ LLM 翻譯
+```
+
+實際效果：
+
+| 影片手上有 | ASR | LLM | 結果 |
+|---|---|---|---|
+| 來源語人工 CC ＋ 中文人工 CC | 略過 | 略過 | 兩層全免費（日文再本地補 romaji，很便宜）|
+| 只有來源語人工 CC | 略過 | 走 LLM | 原文用官方、中文照翻 |
+| 什麼官方字幕都沒有 | Whisper | LLM | 今天的行為 |
+
+**雙軌時間對齊（v1 保守法）**：來源軌與目標軌時間軸各自獨立。v1 以**來源軌為主時間軸**，目標軌用「時間重疊最大」把中文文字塞回對應 cue；對不上的 cue 退回 LLM 翻譯（或留空）。精準雙軌對齊留待日後（§12.8）。簡體（`zh-Hans`）→ 繁中需經 OpenCC 轉換，v1 先只認繁中/泛中軌，簡中軌暫不當免費譯文（§12.8）。
+
+### 12.5 後端契約調整
+
+- **`VideoMeta`**：新增 `source_lang: Option<String>`（`serde(default)`；`None` 視為 `"ja"`，舊 meta 相容）。來源語言是「每支影片」的屬性，於 `POST /api/videos` 決定並持久化，`regenerate` 時沿用。
+- **`POST /api/videos` body**：新增 `source_lang`；前端來源語選擇器帶入。
+- **RPC `GenerateSubtitlesParams`**：`cc_path` 語意泛化為「來源語人工 CC」，新增 `target_cc_path`（目標語人工 CC）。Rust orchestrator 依 §12.4 resolver 挑好軌路徑傳入；worker 維持「最終優先序在自己這邊判」的既有分工（`reference_lyrics > source_cc > ASR`、`target_cc > LLM`）。
+- **`orchestrator.rs`**：不再硬填 `ja`/`zh-TW`——`source_lang` 讀自 `meta`，`target_lang` 維持 `zh-TW`，caption 軌由 resolver 提供。
+
+### 12.6 前端 UI
+
+- **來源語言選擇器**：加在 `GenerationOptionsForm.jsx`（add-to-queue 與 regenerate 兩處）。選英文時隱藏日文專屬選項（羅馬拼音相關、正確歌詞、音樂 MV 歌詞提示）。
+- **疊字層 data-driven**：`SubtitleOverlay.jsx` 依 `language_source`（或 `phonetic`/`tokens` 是否存在）決定顯示層；英文只有 原文＋中文，羅馬拼音 toggle 自動隱藏。props `subJP/subCN/subRomaji` → `subSource/subTarget/subPhonetic`。
+- **側欄與樣式**：`SubtitleList.jsx` 編輯改用中立欄位、標籤中性化；`SettingsPopover.jsx` 的「字幕樣式」三個 slot 對應 原文/讀音/譯文，讀音 slot 對無讀音層的語言隱藏。
+- **狀態徽章**：依 `doc.source` / `doc.target_source` 標示「官方字幕 vs AI 辨識」「官方翻譯 vs AI 翻譯」，一眼看出這支有沒有吃到免費 CC。
+- （可選）匯出新增「雙語 SRT」。
+
+### 12.7 分批上（Phase 5 — 多語來源）
+
+沿用 §11 格式，每個 batch 可獨立驗收；後端先行、前端對著已能動的 API 開發。
+
+| Batch | 範圍 | 依賴 | 驗收（怎麼證明） |
+|---|---|---|---|
+| **B5.1 Schema 中立化** | `Cue` 欄位改名 + `serde(alias)`；`assemble.py` 輸出鍵同步；前端引用點改名。行為不變 | B2.6/B3.x | 舊 `subtitles.json` 照載不重跑；日文影片端到端與改動前一致；測試綠 |
+| **B5.2 Profile 分流 + 英文後端** | profile 表；worker 依表跳過讀音段；`source_lang` 穿過 meta/RPC/orchestrator；translate en→zh | B5.1 | `POST` 一支英文影片（`source_lang:"en"`）→ 產出 原文＋中文 doc、`tokens=[]` |
+| **B5.3 前端來源語選擇器 + 疊字 data-driven** | 選擇器、英文隱藏日文選項、overlay 依語言渲染層 | B5.2 | UI 選英文 → 播放看到中英雙層、羅馬拼音 toggle 消失 |
+| **B5.4 來源軌 CC 略過 ASR** | 下載時抓取**來源語**人工 CC（`fetch_manual_ja_subs` → `fetch_source_captions(source_lang)`，仍存單一 `cc.srt`）；worker 用來源 CC 跳過 Whisper。**不含** manifest／多軌／中文軌（移到 B5.5，因為要 B5.5 才會消費） | B5.2 | 有人工來源 CC 的影片略過 ASR，`doc.source="cc"`（已完成） |
+| **B5.5 多軌抓取 + 目標軌略過翻譯** | 泛化成多軌抓取（來源語 + zh 各變體）+ manifest／per-lang 儲存；resolver 目標軌 + 時間重疊 merge；`target_source` 標示 | B5.4 | 同時有 來源＋中文人工 CC 的影片：零 LLM 呼叫、`doc.target_source="cc"`、徽章顯示「官方翻譯」 |
+
+最小可用里程碑：**B5.3**（畫面上看到英文中英雙字幕）、**B5.5**（吃到全免費官方字幕）。
+
+### 12.8 開放問題 → 設計掛鉤
+
+| 開放問題 | 設計上如何不擋路 |
+|---|---|
+| 自動 CC（auto-subs）品質夠不夠好 | resolver 留 `allow_auto_captions` 開關；開啟時在人工軌之後、ASR/LLM 之前各插一層 auto，不動結構 |
+| 簡中 → 繁中轉換 | 目標軌 resolver 先只認繁中/泛中；未來在 merge 前接 OpenCC，`zh-Hans` 軌才升級為可用免費譯文 |
+| 雙軌精準對齊 | v1 用時間重疊 heuristic；未來可用來源/目標 CC 的字級時間做更精細對齊，或提供手動微調 |
+| 更多來源語言（韓、其他） | profile 表加列 + 該語言讀音實作（可選）；pipeline/schema/前端渲染皆已中立化，不需再改骨架 |

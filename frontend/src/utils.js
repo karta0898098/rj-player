@@ -94,7 +94,7 @@ export function hasKanji(s) {
   return KANJI_RE.test(s);
 }
 
-// dsd.md §4.2 ja_tokens render rule: a token renders as <ruby>t<rt>reading</rt></ruby>
+// dsd.md §4.2 tokens render rule: a token renders as <ruby>t<rt>reading</rt></ruby>
 // only when it both has a `reading` AND its surface text `t` contains kanji;
 // otherwise it's plain text.
 export function isRubyToken(token) {
@@ -109,11 +109,11 @@ export function isRubyToken(token) {
 // SHARED CONTRACT the backend agent implements for
 // POST /api/videos/:id/pipeline.
 export const GENERATION_SETTINGS_DEFAULTS = {
-  whisperModel: 'medium',
+  whisperModel: 'large-v3',
   whisperTemperature: 0,
   initialPrompt: '',
   referenceLyrics: '',
-  vadEnabled: true,
+  vadEnabled: false,
   vadThreshold: 0.45,
   vadMinSilenceMs: 400,
   vadSpeechPadMs: 200,
@@ -220,10 +220,27 @@ export function savePlaylist(videoIds) {
 // pattern as loadGenerationSettings. Single-machine personal tool, so
 // localStorage (not the backend) is the right home.
 const RESUME_POSITIONS_STORAGE_KEY = 'rj-player.resumePositions';
+// Companion map { video_id: epochMs } stamped whenever a resume position is
+// saved, so the video library can sort by "most recently watched" and show a
+// "繼續看" affordance. Kept as a sibling map (not folded into the positions
+// value) so the existing `{ video_id: seconds }` shape stays untouched for
+// the resume-seek path in App.jsx.
+const LAST_PLAYED_STORAGE_KEY = 'rj-player.lastPlayedAt';
 
 export function loadResumePositions() {
   try {
     const raw = localStorage.getItem(RESUME_POSITIONS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadLastPlayedMap() {
+  try {
+    const raw = localStorage.getItem(LAST_PLAYED_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
@@ -237,6 +254,9 @@ export function saveResumePosition(videoId, seconds) {
     const all = loadResumePositions();
     all[videoId] = seconds;
     localStorage.setItem(RESUME_POSITIONS_STORAGE_KEY, JSON.stringify(all));
+    const played = loadLastPlayedMap();
+    played[videoId] = Date.now();
+    localStorage.setItem(LAST_PLAYED_STORAGE_KEY, JSON.stringify(played));
   } catch {
     // ignore — storage unavailable or full
   }
@@ -249,6 +269,9 @@ export function clearResumePosition(videoId) {
       delete all[videoId];
       localStorage.setItem(RESUME_POSITIONS_STORAGE_KEY, JSON.stringify(all));
     }
+    // Deliberately keep the lastPlayedAt stamp: "recently watched" should
+    // survive finishing a video (which clears its resume position via
+    // handleVideoEnded), so a just-finished video still sorts to the top.
   } catch {
     // ignore
   }
@@ -288,9 +311,9 @@ export function buildSrt(cues, { layers = ['ja', 'zh'] } = {}) {
     .map((cue, i) => {
       const lines = [];
       for (const layer of layers) {
-        if (layer === 'ja' && cue.ja_text) lines.push(cue.ja_text);
-        else if (layer === 'zh' && cue.zh_text) lines.push(cue.zh_text);
-        else if (layer === 'romaji' && cue.romaji) lines.push(cue.romaji);
+        if (layer === 'ja' && cue.source_text) lines.push(cue.source_text);
+        else if (layer === 'zh' && cue.target_text) lines.push(cue.target_text);
+        else if (layer === 'romaji' && cue.phonetic) lines.push(cue.phonetic);
       }
       return `${i + 1}\n${msToSrtTime(cue.start_ms)} --> ${msToSrtTime(cue.end_ms)}\n${lines.join('\n')}\n`;
     })
@@ -302,7 +325,7 @@ export function buildSrt(cues, { layers = ['ja', 'zh'] } = {}) {
 export function buildLrc(cues, { layer = 'ja' } = {}) {
   return cues
     .map((cue) => {
-      const text = layer === 'zh' ? cue.zh_text : layer === 'romaji' ? cue.romaji : cue.ja_text;
+      const text = layer === 'zh' ? cue.target_text : layer === 'romaji' ? cue.phonetic : cue.source_text;
       return `[${msToLrcTime(cue.start_ms)}]${text || ''}`;
     })
     .join('\n');
@@ -312,7 +335,7 @@ export function buildLrc(cues, { layer = 'ja' } = {}) {
 // zh line (when present), cues separated by a blank line. No timestamps.
 export function buildBilingualTxt(cues) {
   return cues
-    .map((cue) => (cue.zh_text ? `${cue.ja_text}\n${cue.zh_text}` : cue.ja_text))
+    .map((cue) => (cue.target_text ? `${cue.source_text}\n${cue.target_text}` : cue.source_text))
     .join('\n\n');
 }
 

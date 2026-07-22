@@ -13,11 +13,12 @@ def assemble(
     translate_requested: bool,
     degraded: bool,
     source: Optional[str] = None,
+    target_source: Optional[str] = None,
 ) -> dict:
     """Build the canonical SubtitleDoc.
 
     {version:1, video_id, language_source, target_lang, duration_ms,
-     cues:[{id,start_ms,end_ms,ja_text,ja_tokens,romaji,zh_text}], source}
+     cues:[{id,start_ms,end_ms,source_text,tokens,phonetic,target_text}], source}
 
     `translate_partial` is an additive (non-breaking) field, set only when
     translation was requested but degraded for at least one cue -- see
@@ -25,12 +26,18 @@ def assemble(
     translation wasn't requested or fully succeeded, so it never changes
     the shape of the "happy path" doc.
 
-    `source` is likewise additive: which stage produced the ja text/timing
+    `source` is likewise additive: which stage produced the source text/timing
     -- `"asr"` (Whisper), `"cc"` (manual Japanese CC), or `"align"` (forced
     alignment against user-supplied reference lyrics). `worker.py` passes it
     through from whichever branch of the ASR-stage precedence
     (reference_lyrics > CC > ASR) actually ran; omitted when not given, for
     backward compatibility with any caller that doesn't track it.
+
+    `target_source` (dsd.md §12.4/§12.5/§12.7, B5.5) is likewise additive:
+    which stage produced `target_text` -- `"cc"` (a manual Chinese CC track
+    was time-overlap-merged onto the source timeline, zero LLM calls) or
+    `"llm"` (machine-translated). Omitted (not even `None`/`null`) when not
+    given, same convention as `source`.
     """
     doc: dict = {
         "version": 1,
@@ -44,6 +51,8 @@ def assemble(
         doc["translate_partial"] = True
     if source:
         doc["source"] = source
+    if target_source:
+        doc["target_source"] = target_source
     return doc
 
 

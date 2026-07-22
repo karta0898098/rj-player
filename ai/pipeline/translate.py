@@ -1,4 +1,4 @@
-"""Translate stage: batch ja_text -> zh_text via a pluggable Translator.
+"""Translate stage: batch source_text -> target_text via a pluggable Translator.
 
 dsd.md §4.3: translation is abstracted behind a `Translator` class so the
 LLM provider can be swapped without touching the pipeline. Provider here is
@@ -6,7 +6,7 @@ Anthropic Claude via the `anthropic` SDK.
 
 dsd.md §7 (critical, graceful degradation): if ANTHROPIC_API_KEY is missing,
 or the API keeps failing after retries, we must NOT fail the whole job --
-affected cues get zh_text=None, the job still produces a valid `result`, and
+affected cues get target_text=None, the job still produces a valid `result`, and
 a warning goes to stderr. The doc gets marked `translate_partial: true` (per
 dsd.md §7: "doc 仍落地並標 translate_partial") so downstream consumers can
 tell "translation was requested but degraded" apart from "translation was
@@ -34,12 +34,18 @@ DEFAULT_MODEL = DEFAULT_ANTHROPIC_MODEL
 DEFAULT_BATCH_SIZE = 40
 MAX_RETRIES = 3
 
+# dsd.md §12.2/§12.3 (B5.2): human-readable name for each supported source
+# language, used in the translate prompt so the LLM is told what it's
+# reading. Falls back to the raw code itself for any language not listed
+# here (still a reasonable prompt -- e.g. "numbered ko lines").
+SOURCE_LANG_NAMES = {"ja": "Japanese", "en": "English"}
+
 
 class Translator(ABC):
     """Provider-agnostic batch translator. dsd.md §4.3."""
 
     @abstractmethod
-    def translate_batch(self, texts: list[str], target_lang: str) -> list[str]:
+    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
         """Translate texts -> target_lang, preserving order/length exactly.
 
         Raises on failure (caller handles retry/degradation).
@@ -56,11 +62,11 @@ class AnthropicTranslator(Translator):
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
 
-    def translate_batch(self, texts: list[str], target_lang: str) -> list[str]:
+    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
         if not texts:
             return []
 
-        prompt = _build_prompt(texts, target_lang)
+        prompt = _build_prompt(texts, target_lang, source_lang)
         last_err: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES):
@@ -103,13 +109,13 @@ class GeminiTranslator(Translator):
         self._client = genai.Client(api_key=api_key)
         self._model = model
 
-    def translate_batch(self, texts: list[str], target_lang: str) -> list[str]:
+    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
         if not texts:
             return []
 
         from google.genai import types
 
-        prompt = _build_prompt(texts, target_lang)
+        prompt = _build_prompt(texts, target_lang, source_lang)
         last_err: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES):
@@ -176,11 +182,11 @@ class OpenAITranslator(Translator):
         self._client = OpenAI(api_key=api_key)
         self._model = model
 
-    def translate_batch(self, texts: list[str], target_lang: str) -> list[str]:
+    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
         if not texts:
             return []
 
-        prompt = _build_prompt(texts, target_lang)
+        prompt = _build_prompt(texts, target_lang, source_lang)
         # OpenAI structured outputs require an object root, so wrap the array
         # under `translations` and unwrap after parsing.
         schema = {
@@ -230,16 +236,17 @@ class OpenAITranslator(Translator):
         raise RuntimeError(f"translation failed after {MAX_RETRIES} attempts: {last_err}")
 
 
-def _build_prompt(texts: list[str], target_lang: str) -> str:
+def _build_prompt(texts: list[str], target_lang: str, source_lang: str) -> str:
     numbered = "\n".join(f"{i}: {t}" for i, t in enumerate(texts))
     lang_hint = "Traditional Chinese (繁體中文，台灣用語)" if target_lang == "zh-TW" else target_lang
+    source_name = SOURCE_LANG_NAMES.get(source_lang, source_lang)
     n = len(texts)
     # The "EXACTLY N / never merge duplicates" wording matters: lyric lines
     # repeat (e.g. 「嘘だよ」 many times) and the model otherwise deduplicates
     # or merges adjacent identical lines, returning fewer items than sent and
     # tripping the length-mismatch check (→ that batch degrades to null).
     return (
-        f"Translate each of the following {n} numbered Japanese lines into "
+        f"Translate each of the following {n} numbered {source_name} lines into "
         f"{lang_hint}. Output EXACTLY {n} translations — one per input line, in "
         f"the same order. Even if some lines are identical, empty, or repeated, "
         f"emit a SEPARATE translation for every line; never merge, skip, "
@@ -302,7 +309,7 @@ def _select_translator() -> Optional[Translator]:
 
 
 def _translate_resilient(
-    translator: Translator, texts: list[str], target_lang: str
+    translator: Translator, texts: list[str], target_lang: str, source_lang: str
 ) -> tuple[list[Optional[str]], bool]:
     """Translate `texts`, splitting the batch on failure to salvage coverage.
 
@@ -317,52 +324,58 @@ def _translate_resilient(
     if not texts:
         return [], False
     try:
-        return list(translator.translate_batch(texts, target_lang)), False
+        return list(translator.translate_batch(texts, target_lang, source_lang)), False
     except Exception as e:  # noqa: BLE001 - split-and-retry, see docstring
         if len(texts) == 1:
             protocol.log(f"[translate] line failed permanently, degrading to null: {e}")
             return [None], True
         mid = len(texts) // 2
-        left, ld = _translate_resilient(translator, texts[:mid], target_lang)
-        right, rd = _translate_resilient(translator, texts[mid:], target_lang)
+        left, ld = _translate_resilient(translator, texts[:mid], target_lang, source_lang)
+        right, rd = _translate_resilient(translator, texts[mid:], target_lang, source_lang)
         return left + right, (ld or rd)
 
 
 def translate_segments(
-    ja_texts: list[str],
+    source_texts: list[str],
     target_lang: str,
+    source_lang: str = "ja",
     batch_size: int = DEFAULT_BATCH_SIZE,
     on_progress: Optional[callable] = None,
 ) -> tuple[list[Optional[str]], bool]:
     """Translate all segments, batching `batch_size` per LLM call.
 
-    Returns (zh_texts, degraded). zh_texts has the same length/order as
-    ja_texts; entries are None where translation is unavailable/failed.
+    `source_lang` (dsd.md §12.2/§12.3, B5.2) feeds the translate prompt so
+    the LLM is told the correct source language; it defaults to `"ja"` so
+    any caller that predates this parameter (or omits it) keeps translating
+    with the same "Japanese lines" prompt as before.
+
+    Returns (target_texts, degraded). target_texts has the same length/order
+    as source_texts; entries are None where translation is unavailable/failed.
     degraded is True if ANY cue ended up without a translation.
     """
     translator = _select_translator()
     if translator is None:
         protocol.log(
             "[translate] no usable LLM provider/key configured; skipping "
-            "translation (degrading to zh_text=null for all cues)"
+            "translation (degrading to target_text=null for all cues)"
         )
-        return [None] * len(ja_texts), True
+        return [None] * len(source_texts), True
 
-    results: list[Optional[str]] = [None] * len(ja_texts)
+    results: list[Optional[str]] = [None] * len(source_texts)
     degraded = False
-    total = len(ja_texts) or 1
+    total = len(source_texts) or 1
 
-    for start in range(0, len(ja_texts), batch_size):
-        batch = ja_texts[start : start + batch_size]
+    for start in range(0, len(source_texts), batch_size):
+        batch = source_texts[start : start + batch_size]
         # Resilient translate: a whole-batch call first, split-and-retry only
         # on failure (e.g. the model merging repeated lyric lines).
-        translated, deg = _translate_resilient(translator, batch, target_lang)
+        translated, deg = _translate_resilient(translator, batch, target_lang, source_lang)
         for i, t in enumerate(translated):
             results[start + i] = t
         if deg:
             degraded = True
         if on_progress is not None:
-            done = min(start + batch_size, len(ja_texts))
+            done = min(start + batch_size, len(source_texts))
             on_progress(int(done / total * 100))
 
     return results, degraded

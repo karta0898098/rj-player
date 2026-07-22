@@ -100,7 +100,7 @@ implementation today is `AnthropicTranslator` (Anthropic Claude via the
 
 If `ANTHROPIC_API_KEY` is unset, or the API keeps failing after retries
 (3 attempts, exponential backoff: 1s/2s/4s), the job is **not** failed:
-the affected cues get `zh_text: null`, a warning is logged to stderr, and
+the affected cues get `target_text: null`, a warning is logged to stderr, and
 the worker still emits a valid `result`. When this happens for a job that
 requested translation, the assembled doc gets an additive
 `"translate_partial": true` field (per dsd.md §7's "doc 仍落地並標
@@ -121,7 +121,7 @@ batch's cues, not the whole job.
 | `LLM_MODEL` | per-provider | Overrides the model. Provider defaults: Gemini `gemini-flash-lite-latest`, Anthropic `claude-sonnet-5`. |
 | `WHISPER_MODEL` | `small` | Default faster-whisper model size when a request doesn't specify `whisper_model`. `small` is a speed-first default to validate the pipeline quickly; `large-v3` gives noticeably better Japanese ASR accuracy at the cost of speed (spec.md §7 open question) — set this once accuracy needs outweigh iteration speed. |
 
-> **Free-tier quota note (Gemini):** the free tier caps requests-per-day per model (e.g. ~20/day). Batches default to 40 lines/request to keep whole videos within a handful of calls; if you hit `429 RESOURCE_EXHAUSTED`, either switch `LLM_MODEL` to another flash-lite model (separate quota bucket), enable billing on the API project, or wait for the daily reset. Cues that can't be translated degrade to `zh_text: null` (the job still completes and marks `translate_partial: true`).
+> **Free-tier quota note (Gemini):** the free tier caps requests-per-day per model (e.g. ~20/day). Batches default to 40 lines/request to keep whole videos within a handful of calls; if you hit `429 RESOURCE_EXHAUSTED`, either switch `LLM_MODEL` to another flash-lite model (separate quota bucket), enable billing on the API project, or wait for the daily reset. Cues that can't be translated degrade to `target_text: null` (the job still completes and marks `translate_partial: true`).
 
 `whisper_model` and `target_lang` can also be set per-request via RPC
 `params`, which take precedence over the environment defaults above.
@@ -134,12 +134,12 @@ batch's cues, not the whole job.
   HuggingFace (~500MB for `small`).
 - **Tokenize**: `fugashi` + `unidic-lite` (self-contained, no external
   MeCab/dictionary install). Every token's surface is emitted, so
-  concatenating `ja_tokens[].t` always reproduces `ja_text` exactly — this
+  concatenating `tokens[].t` always reproduces `source_text` exactly — this
   is asserted in code (`pipeline/tokenizer.py` raises if violated) and
   exercised by `--selftest`. `reading` is attached only when a token's
   surface contains at least one kanji character, converted from unidic's
   katakana reading to hiragana.
-- **Romaji**: built from the same `ja_tokens` (not the raw sentence)
+- **Romaji**: built from the same `tokens` (not the raw sentence)
   rather than calling `pykakasi.convert()` on the whole sentence directly.
   Reason: pykakasi has a built-in idiom dictionary that hijacks common
   substrings — e.g. it converts the leading "今日は" in

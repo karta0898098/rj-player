@@ -10,6 +10,8 @@ import PlaylistPanel from './components/PlaylistPanel.jsx';
 import SettingsPopover from './components/SettingsPopover.jsx';
 import AddToQueuePopover from './components/AddToQueuePopover.jsx';
 import QueueList from './components/QueueList.jsx';
+import LibraryView from './components/LibraryView.jsx';
+import ConfirmDialog from './components/ConfirmDialog.jsx';
 import { getTheme } from './theme.js';
 import {
   formatTime,
@@ -41,6 +43,7 @@ import {
   previewVideo,
   listVideos,
   cancelQueueItem,
+  deleteVideo,
   patchCue,
 } from './api.js';
 
@@ -90,6 +93,15 @@ export default function App() {
   // fullscreen target (README change #4), so the ruby subtitle overlay is
   // included in fullscreen instead of just the bare <video>.
   const stageContainerRef = useRef(null);
+  // Set (just before) advancing to the next playlist item on `ended` (see
+  // handleVideoEnded) and consumed by handleCanPlay once the freshly-loaded
+  // next video is ready to play -- the only signal that distinguishes an
+  // auto-advance load from every other load path (initial load, manual
+  // playlist click, etc.), none of which should auto-play. Deliberately NOT
+  // reset by resetPlaybackState/selectPlaylistItem -- it must survive their
+  // state resets so it's still true by the time the new video's `canplay`
+  // fires.
+  const autoAdvanceRef = useRef(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -110,29 +122,35 @@ export default function App() {
   // On/off + appearance are independently adjustable per layer (size/color/
   // shadow) rather than one shared fontScale/jpColor for all three — see
   // SettingsPopover.jsx's "字幕樣式" section (SubtitleLayerPanel). `shadow`
-  // is 0..1 intensity; romaji defaults to 0 (no shadow) matching its
-  // pre-existing look, jp/cn default to 0.6 matching their old fixed values.
-  const [subJP, setSubJP] = useState(true);
-  const [subCN, setSubCN] = useState(true);
-  const [subRomaji, setSubRomaji] = useState(true);
-  const [jpStyle, setJpStyle] = useState({ scale: 1, color: '#ffffff', shadow: 0.6 });
-  // Default colors match the pre-existing fixed values for CN/romaji
-  // (dimmer than JP by design) — not one of the swatch presets, so the
+  // is 0..1 intensity; phonetic defaults to 0 (no shadow) matching its
+  // pre-existing look, source/target default to 0.6 matching their old fixed
+  // values. Prop/state names are language-neutral (dsd.md §12.6/§12.7 B5.3:
+  // the old JP/CN/Romaji-suffixed names became Source/Target/Phonetic) since
+  // the source layer isn't always Japanese (e.g. an English video's source
+  // is English) — content-gating (a language with no reading layer just
+  // never populates `phonetic`) already made the underlying behavior
+  // language-agnostic; this rename just makes the names match.
+  const [subSource, setSubSource] = useState(true);
+  const [subTarget, setSubTarget] = useState(true);
+  const [subPhonetic, setSubPhonetic] = useState(true);
+  const [sourceStyle, setSourceStyle] = useState({ scale: 1, color: '#ffffff', shadow: 0.6 });
+  // Default colors match the pre-existing fixed values for target/phonetic
+  // (dimmer than source by design) — not one of the swatch presets, so the
   // swatch row just shows no active selection until the user picks one.
-  const [cnStyle, setCnStyle] = useState({ scale: 1, color: 'rgba(255,255,255,0.82)', shadow: 0.6 });
-  const [romajiStyle, setRomajiStyle] = useState({ scale: 1, color: 'rgba(255,255,255,0.55)', shadow: 0 });
+  const [targetStyle, setTargetStyle] = useState({ scale: 1, color: 'rgba(255,255,255,0.82)', shadow: 0.6 });
+  const [phoneticStyle, setPhoneticStyle] = useState({ scale: 1, color: 'rgba(255,255,255,0.55)', shadow: 0 });
   // Each SubtitleLayerPanel control (size/color/shadow) calls its layer's
   // onXxxStyleChange with just the one field that changed — these merge it
   // into the existing style object rather than requiring the caller to
   // spread the other two fields itself.
-  function updateJpStyle(partial) {
-    setJpStyle((s) => ({ ...s, ...partial }));
+  function updateSourceStyle(partial) {
+    setSourceStyle((s) => ({ ...s, ...partial }));
   }
-  function updateCnStyle(partial) {
-    setCnStyle((s) => ({ ...s, ...partial }));
+  function updateTargetStyle(partial) {
+    setTargetStyle((s) => ({ ...s, ...partial }));
   }
-  function updateRomajiStyle(partial) {
-    setRomajiStyle((s) => ({ ...s, ...partial }));
+  function updatePhoneticStyle(partial) {
+    setPhoneticStyle((s) => ({ ...s, ...partial }));
   }
   // manual subtitle time-offset ("字幕時間校正"), ms; positive = later/delayed
   // (see SubtitleOverlay.jsx for the direction derivation).
@@ -150,6 +168,21 @@ export default function App() {
   const [subtitlePct, setSubtitlePct] = useState(null);
   const [subtitleError, setSubtitleError] = useState(null);
   const [translatePartial, setTranslatePartial] = useState(false);
+  // The loaded doc's `language_source` (dsd.md §12.5/§12.7 B5.3), captured
+  // when subtitles are fetched (see loadSubtitles) — used for SettingsPopover's
+  // source-layer label ('ja' -> 日文, 'en' -> 英文, fallback 原文). Distinct
+  // from queueDraft.sourceLang (the add-to-queue form's pre-submission
+  // choice for a NEW video) — this is the currently-loaded video's actual
+  // stored language.
+  const [docSourceLang, setDocSourceLang] = useState('ja');
+  // The loaded doc's `source`/`target_source` provenance fields (dsd.md
+  // §12.6 B5.5): 'cc' (manual CC) | 'align' (forced alignment) | 'asr'
+  // (Whisper) for `docSource`; 'cc' (manual CC merged in) | 'llm' (machine-
+  // translated) for `docTargetSource`. Both absent -> null. Captured
+  // alongside docSourceLang in loadSubtitles; purely informational, shown as
+  // a small badge in SubtitleList's export bar.
+  const [docSource, setDocSource] = useState(null);
+  const [docTargetSource, setDocTargetSource] = useState(null);
 
   // ---- subtitle-generation settings (Whisper/VAD/prompt knobs) ------------
   // Backs the "進階：字幕產生設定" section in SettingsPopover — sent to the
@@ -171,16 +204,21 @@ export default function App() {
   const settingsAnchorRef = useRef(null);
 
   // ---- queue feature: add-to-queue draft + queue list --------------------
-  // `queueDraft` is the per-item ASR/generation options (+ music-MV flag)
-  // for whatever URL currently sits in the Titlebar input, independent of
-  // the `whisperModel`/etc. state above (which is scoped to "regenerate the
-  // CURRENTLY LOADED video" and must not be silently mutated just because
-  // the user pasted a new URL). Starts from the same persisted
-  // localStorage defaults so a user's preferred whisper model etc. carries
-  // over, but is otherwise a fresh, independently-editable draft per URL.
+  // `queueDraft` is the per-item ASR/generation options (+ music-MV flag +
+  // source-language choice, dsd.md §12.6/§12.7 B5.3) for whatever URL
+  // currently sits in the Titlebar input, independent of the `whisperModel`/
+  // etc. state above (which is scoped to "regenerate the CURRENTLY LOADED
+  // video" and must not be silently mutated just because the user pasted a
+  // new URL). Starts from the same persisted localStorage defaults so a
+  // user's preferred whisper model etc. carries over, but is otherwise a
+  // fresh, independently-editable draft per URL. `sourceLang` isn't part of
+  // GENERATION_SETTINGS_DEFAULTS/localStorage — it always starts at 'ja'
+  // like isMusicVideo does.
   const [queueDraft, setQueueDraft] = useState(() => ({
     ...loadGenerationSettings(),
     isMusicVideo: false,
+    sourceLang: 'ja',
+    maxHeight: 1080,
   }));
   // Set on any manual edit to a draft field; blocks a late (debounced)
   // preview response from clobbering an edit the user already made for
@@ -216,6 +254,25 @@ export default function App() {
   // 'subtitles').
   const [sidebarTab, setSidebarTab] = useState('playlist'); // 'subtitles' | 'playlist'
 
+  // ---- main view: player vs. video library --------------------------------
+  // The Titlebar's library button swaps the whole body between the normal
+  // player and the LibraryView grid. Kept as a plain string toggle (no
+  // routing) — this is a single-window desktop-style tool.
+  const [view, setView] = useState('player'); // 'player' | 'library'
+
+  // Pending library delete awaiting confirmation via the custom ConfirmDialog
+  // (replaces native window.confirm) — `{ video_id, title }` or null.
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  // Transient in-app toast (replaces native window.alert) for action errors.
+  const [notice, setNotice] = useState(null);
+  const noticeTimerRef = useRef(0);
+  function showNotice(message) {
+    setNotice(message);
+    clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => setNotice(null), 4000);
+  }
+  useEffect(() => () => clearTimeout(noticeTimerRef.current), []);
+
   useEffect(() => {
     savePlaylist(playlistIds);
   }, [playlistIds]);
@@ -248,6 +305,64 @@ export default function App() {
     await finalizeReady(id);
   }
 
+  // ---- video library actions (LibraryView) --------------------------------
+  // Play a library card: switch back to the player view and load it (unless
+  // it's already the active video, in which case just return to the player).
+  async function handleLibraryPlay(id) {
+    setView('player');
+    if (id && id !== videoId) {
+      await selectPlaylistItem(id);
+    }
+  }
+
+  // Re-run the whole subtitle pipeline for a library item. If it's the
+  // currently-loaded video, route through regenerateSubtitles() so it rides
+  // the same WS/progress machinery as the settings-popover button; otherwise
+  // fire the pipeline in the background (the GET /api/videos poll +
+  // QueueList reflect its progress) using the persisted generation settings.
+  async function handleLibraryRegenerate(id) {
+    if (!id) return;
+    if (id === videoId) {
+      await regenerateSubtitles();
+      return;
+    }
+    try {
+      recentlyAddedRef.current.set(id, Date.now());
+      await regeneratePipeline(id, buildGenerationSettingsPayload(loadGenerationSettings()));
+      refreshQueue();
+    } catch (err) {
+      showNotice(err.message || '重新產生字幕失敗');
+    }
+  }
+
+  // Delete a library item (its whole on-disk folder). Opens the custom
+  // ConfirmDialog (not native confirm) since it's irreversible + frees the
+  // mp4; `performDelete` runs once the user confirms.
+  function handleLibraryDelete(id) {
+    if (!id) return;
+    const item = videoLookup[id];
+    setConfirmDelete({ video_id: id, title: item?.title || id });
+  }
+
+  // Runs the actual delete after ConfirmDialog confirmation. Cleans up the
+  // video's playlist entry + resume position, and unloads the player if it
+  // was the active video.
+  async function performDelete() {
+    const target = confirmDelete;
+    if (!target) return;
+    setConfirmDelete(null);
+    try {
+      await deleteVideo(target.video_id);
+      if (target.video_id === videoId) resetPlaybackState();
+      removeFromPlaylist(target.video_id);
+      clearResumePosition(target.video_id);
+      recentlyAddedRef.current.delete(target.video_id);
+      refreshQueue();
+    } catch (err) {
+      showNotice(err.message || '刪除失敗');
+    }
+  }
+
   function updateQueueDraft(partial) {
     queueTouchedRef.current = true;
     setQueueDraft((d) => ({ ...d, ...partial }));
@@ -266,7 +381,7 @@ export default function App() {
 
   function resetQueueDraft() {
     queueTouchedRef.current = false;
-    setQueueDraft({ ...GENERATION_SETTINGS_DEFAULTS, isMusicVideo: false });
+    setQueueDraft({ ...GENERATION_SETTINGS_DEFAULTS, isMusicVideo: false, sourceLang: 'ja', maxHeight: 1080 });
   }
 
   function closeWs() {
@@ -354,10 +469,12 @@ export default function App() {
   }, [showQueueOptions]);
 
   // Debounced POST /api/videos/preview as the user pastes/edits the URL
-  // (queue feature's music-MV auto-detect): on a genuinely new URL, resets
-  // the draft to persisted defaults, then -- once the preview resolves --
-  // auto-applies the music preset if is_music is true and the user hasn't
-  // already hand-edited a field for this same URL.
+  // (queue feature's music-MV auto-detect + source-language auto-detect): on
+  // a genuinely new URL, resets the draft to persisted defaults, then --
+  // once the preview resolves -- auto-applies the music preset if is_music
+  // is true and the user hasn't already hand-edited a field for this same
+  // URL, and pre-selects the 來源語言 picker from the preview's detected
+  // `source_lang` (still user-overridable in the form either way).
   useEffect(() => {
     const url = urlInput.trim();
     if (!url) {
@@ -370,7 +487,7 @@ export default function App() {
       if (url === lastQueuedUrlRef.current) return;
       lastQueuedUrlRef.current = url;
       queueTouchedRef.current = false;
-      setQueueDraft({ ...loadGenerationSettings(), isMusicVideo: false });
+      setQueueDraft({ ...loadGenerationSettings(), isMusicVideo: false, sourceLang: 'ja', maxHeight: 1080 });
       setQueuePreviewLoading(true);
       setQueuePreviewError(null);
       try {
@@ -378,6 +495,9 @@ export default function App() {
         setQueuePreview(data);
         if (data.is_music && !queueTouchedRef.current) {
           setQueueDraft((d) => ({ ...d, isMusicVideo: true, ...MUSIC_GENERATION_PRESET }));
+        }
+        if (data.source_lang) {
+          setQueueDraft((d) => ({ ...d, sourceLang: data.source_lang }));
         }
       } catch (err) {
         setQueuePreview(null);
@@ -466,6 +586,9 @@ export default function App() {
       const doc = await getSubtitles(id);
       setCues([...doc.cues].sort((a, b) => a.start_ms - b.start_ms));
       setTranslatePartial(Boolean(doc.translate_partial));
+      setDocSourceLang(doc.language_source || 'ja');
+      setDocSource(doc.source || null);
+      setDocTargetSource(doc.target_source || null);
       setSubtitleStatus('ready');
     } catch (err) {
       setSubtitleStatus('failed');
@@ -474,11 +597,11 @@ export default function App() {
   }
 
   // ---- inline subtitle edit (P1) ----------------------------------------
-  // Persist a manual edit to one cue's ja_text/zh_text, then replace that cue
-  // in `cues` with the backend's returned (canonicalized) version so both the
-  // list and the on-video overlay refresh in place — no refetch. Editing
-  // ja_text clears its furigana/romaji server-side (they'd be stale), which
-  // the returned cue reflects.
+  // Persist a manual edit to one cue's source_text/target_text, then replace
+  // that cue in `cues` with the backend's returned (canonicalized) version so
+  // both the list and the on-video overlay refresh in place — no refetch.
+  // Editing source_text clears its furigana/romaji server-side (they'd be
+  // stale), which the returned cue reflects.
   async function editCue(cueId, patch) {
     if (!videoId) return;
     try {
@@ -720,6 +843,9 @@ export default function App() {
     setSubtitlePct(null);
     setSubtitleError(null);
     setTranslatePartial(false);
+    setDocSourceLang('ja');
+    setDocSource(null);
+    setDocTargetSource(null);
   }
 
   // "加入佇列": always submits through POST /api/videos (now the queue
@@ -736,7 +862,7 @@ export default function App() {
 
     setQueueSubmitting(true);
     try {
-      const data = await createVideo(url, queueDraft, queueDraft.isMusicVideo);
+      const data = await createVideo(url, queueDraft, queueDraft.isMusicVideo, queueDraft.sourceLang, queueDraft.maxHeight);
       recentlyAddedRef.current.set(data.video_id, Date.now());
       addToPlaylist(data.video_id);
       setUrlInput('');
@@ -839,7 +965,22 @@ export default function App() {
     if (videoId) clearResumePosition(videoId);
     const idx = playlistIds.indexOf(videoId);
     const nextId = idx >= 0 && idx + 1 < playlistIds.length ? playlistIds[idx + 1] : null;
-    if (nextId) selectPlaylistItem(nextId);
+    if (nextId) {
+      autoAdvanceRef.current = true;
+      selectPlaylistItem(nextId);
+    }
+  }
+
+  // <video> canplay: fires once the freshly-loaded video (any src change) has
+  // buffered enough to start. Only auto-plays when this load was itself an
+  // auto-advance (see handleVideoEnded) -- every other load (initial load,
+  // manual playlist click, resume-from-library, etc.) leaves the video
+  // paused exactly as before this feature existed.
+  function handleCanPlay() {
+    if (autoAdvanceRef.current) {
+      autoAdvanceRef.current = false;
+      videoRef.current?.play().catch(() => {});
+    }
   }
 
   // Fullscreens/exits VideoStage's outer container (stageContainerRef), NOT
@@ -888,6 +1029,12 @@ export default function App() {
   // wide empty panel dragging the video off-center. VideoStage always
   // centers itself in whatever column width it ends up with.
   const hasCues = Boolean(cues && cues.length);
+  // Data-driven signal (dsd.md §12.6/§12.7 B5.3), not a hardcoded language
+  // list: true whenever the loaded doc actually has a reading/phonetic layer
+  // (ja produces romaji per-cue; en's profile leaves `phonetic: ""` on every
+  // cue per B5.2) — drives SettingsPopover hiding the 羅馬拼音 toggle + its
+  // 字幕樣式 style slot for a source language with no reading layer.
+  const hasPhoneticLayer = cues.some((c) => c.phonetic);
   const showSubtitlePanel = hasCues || (subtitleStatus && subtitleStatus !== 'idle') || playlistIds.length > 0;
   const showChannelRow = !theaterMode && Boolean(channelName);
 
@@ -898,6 +1045,12 @@ export default function App() {
   const playlistItems = playlistIds.map(
     (id) => videoLookup[id] || { video_id: id, title: '', channel: '', status: 'new', is_music_video: false }
   );
+
+  // LibraryView's full dataset: every video the GET /api/videos poll knows
+  // about (videoLookup is rebuilt fresh each poll, so deleted videos drop out
+  // and new downloads appear without extra plumbing). LibraryView does its
+  // own search/filter/sort over this.
+  const libraryVideos = Object.values(videoLookup);
 
   // Built once, mounted in exactly ONE of two spots depending on
   // isFullscreen: normal below-video position (this file), or inside
@@ -912,6 +1065,7 @@ export default function App() {
       currentTime={currentTime}
       duration={duration}
       onSeek={onSeek}
+      previewSrc={videoSrc}
       disabled={loadStatus !== 'downloaded'}
       isPlaying={isPlaying}
       onTogglePlay={togglePlay}
@@ -932,18 +1086,20 @@ export default function App() {
           dark={darkMode}
           speed={speed}
           onSpeedChange={setSpeed}
-          subJP={subJP}
-          onToggleSubJP={() => setSubJP((s) => !s)}
-          subCN={subCN}
-          onToggleSubCN={() => setSubCN((s) => !s)}
-          subRomaji={subRomaji}
-          onToggleSubRomaji={() => setSubRomaji((s) => !s)}
-          jpStyle={jpStyle}
-          onJpStyleChange={updateJpStyle}
-          cnStyle={cnStyle}
-          onCnStyleChange={updateCnStyle}
-          romajiStyle={romajiStyle}
-          onRomajiStyleChange={updateRomajiStyle}
+          subSource={subSource}
+          onToggleSubSource={() => setSubSource((s) => !s)}
+          subTarget={subTarget}
+          onToggleSubTarget={() => setSubTarget((s) => !s)}
+          subPhonetic={subPhonetic}
+          onToggleSubPhonetic={() => setSubPhonetic((s) => !s)}
+          sourceStyle={sourceStyle}
+          onSourceStyleChange={updateSourceStyle}
+          targetStyle={targetStyle}
+          onTargetStyleChange={updateTargetStyle}
+          phoneticStyle={phoneticStyle}
+          onPhoneticStyleChange={updatePhoneticStyle}
+          hasPhoneticLayer={hasPhoneticLayer}
+          sourceLang={docSourceLang}
           translatePartial={translatePartial}
           subtitleOffsetMs={subtitleOffsetMs}
           onSubtitleOffsetChange={setSubtitleOffsetMs}
@@ -1023,6 +1179,8 @@ export default function App() {
           onUrlChange={setUrlInput}
           onUrlSubmit={handleUrlSubmit}
           loading={queueSubmitting}
+          showLibrary={view === 'library'}
+          onToggleLibrary={() => setView((v) => (v === 'library' ? 'player' : 'library'))}
           optionsAnchorRef={queueOptionsAnchorRef}
           showOptions={showQueueOptions}
           onToggleOptions={() => setShowQueueOptions((s) => !s)}
@@ -1053,6 +1211,10 @@ export default function App() {
               onVadMaxSpeechSChange={(v) => updateQueueDraft({ vadMaxSpeechS: v })}
               isMusicVideo={queueDraft.isMusicVideo}
               onIsMusicVideoChange={setQueueMusicVideo}
+              sourceLang={queueDraft.sourceLang}
+              onSourceLangChange={(v) => updateQueueDraft({ sourceLang: v })}
+              maxHeight={queueDraft.maxHeight}
+              onMaxHeightChange={(v) => updateQueueDraft({ maxHeight: v })}
               onResetGenerationSettings={resetQueueDraft}
             />
           }
@@ -1060,10 +1222,24 @@ export default function App() {
 
         <QueueList theme={theme} items={queueItems} onCancel={handleCancelQueueItem} />
 
-        {/* Two-column body (README change #3): LEFT = channel row + video +
-            controls (unchanged behavior), RIGHT = the clickable subtitle-list
-            sidebar. minHeight:0 lets the sidebar's own overflowY:auto scroll
-            within the row's stretched height instead of growing it. */}
+        {view === 'library' ? (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <LibraryView
+              theme={theme}
+              videos={libraryVideos}
+              activeVideoId={videoId}
+              playlistIds={playlistIds}
+              onPlay={handleLibraryPlay}
+              onAddToPlaylist={addToPlaylist}
+              onRegenerate={handleLibraryRegenerate}
+              onDelete={handleLibraryDelete}
+            />
+          </div>
+        ) : (
+        /* Two-column body (README change #3): LEFT = channel row + video +
+           controls (unchanged behavior), RIGHT = the clickable subtitle-list
+           sidebar. minHeight:0 lets the sidebar's own overflowY:auto scroll
+           within the row's stretched height instead of growing it. */
         <div style={{ display: 'flex', minHeight: 0 }}>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {showChannelRow && <VideoInfo theme={theme} channelName={channelName} />}
@@ -1084,18 +1260,19 @@ export default function App() {
               onTimeUpdate={handleTimeUpdate}
               onLoadedMetadata={handleLoadedMetadata}
               onEnded={handleVideoEnded}
+              onCanPlay={handleCanPlay}
               loadStatus={loadStatus}
               downloadPct={downloadPct}
               stageLabel={stageLabel}
               errorMessage={errorMessage}
               currentTime={currentTime}
               cues={cues}
-              subJP={subJP}
-              subCN={subCN}
-              subRomaji={subRomaji}
-              jpStyle={jpStyle}
-              cnStyle={cnStyle}
-              romajiStyle={romajiStyle}
+              subSource={subSource}
+              subTarget={subTarget}
+              subPhonetic={subPhonetic}
+              sourceStyle={sourceStyle}
+              targetStyle={targetStyle}
+              phoneticStyle={phoneticStyle}
               subtitleOffsetMs={subtitleOffsetMs}
               subtitleBg={subtitleBg}
               subtitleStatus={subtitleStatus}
@@ -1127,6 +1304,8 @@ export default function App() {
                   subtitleStatus={subtitleStatus}
                   subtitleStage={subtitleStage}
                   subtitlePct={subtitlePct}
+                  source={docSource}
+                  targetSource={docTargetSource}
                   onSeekToCue={seekToCue}
                   onEditCue={editCue}
                   onExport={handleExportSubtitles}
@@ -1144,8 +1323,46 @@ export default function App() {
             </SidebarPanel>
           )}
         </div>
+        )}
       </div>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        theme={theme}
+        title="刪除影片？"
+        message={confirmDelete ? `「${confirmDelete.title}」的影片檔、字幕與縮圖都會從硬碟移除，無法復原。` : ''}
+        confirmLabel="刪除"
+        cancelLabel="取消"
+        danger
+        onConfirm={performDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
+
+      {notice && (
+        <div
+          style={{
+            position: 'fixed',
+            left: '50%',
+            bottom: 28,
+            transform: 'translateX(-50%)',
+            zIndex: 1001,
+            maxWidth: '80vw',
+            background: 'rgba(20,20,22,0.92)',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            color: '#fff',
+            fontSize: 13,
+            fontWeight: 600,
+            padding: '10px 16px',
+            borderRadius: 10,
+            boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
+          }}
+        >
+          {notice}
+        </div>
+      )}
     </>
   );
 }

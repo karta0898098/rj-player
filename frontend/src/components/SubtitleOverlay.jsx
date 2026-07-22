@@ -22,16 +22,16 @@ import { findActiveCue, isRubyToken, MAX_CUE_DISPLAY_MS } from '../utils.js';
 export default function SubtitleOverlay({
   cues,
   currentTime,
-  subJP,
-  subCN,
-  subRomaji,
+  subSource,
+  subTarget,
+  subPhonetic,
   // Per-layer appearance — each `{ scale, color, shadow }` (size multiplier,
   // CSS color, 0..1 text-shadow intensity). Independently adjustable per
   // layer (SettingsPopover.jsx's "字幕樣式" section) rather than one shared
-  // fontScale/jpColor for all three.
-  jpStyle,
-  cnStyle,
-  romajiStyle,
+  // fontScale/color for all three.
+  sourceStyle,
+  targetStyle,
+  phoneticStyle,
   subtitleOffsetMs = 0,
   subtitleBg = 0,
   isFullscreen = false,
@@ -71,14 +71,14 @@ export default function SubtitleOverlay({
   }
   const cue = activeCue;
 
-  // ja_tokens -> <ruby> per dsd.md §4.2: a token with a `reading` AND
+  // tokens -> <ruby> per dsd.md §4.2: a token with a `reading` AND
   // containing kanji renders as <ruby>t<rt>reading</rt></ruby>, otherwise
-  // plain text. Concatenating every token's `t` reproduces `ja_text`
+  // plain text. Concatenating every token's `t` reproduces `source_text`
   // exactly, so falling back to a single plain-text "token" wrapping
-  // `ja_text` is a safe degrade if `ja_tokens` is ever missing/empty.
-  const jpNodes = useMemo(() => {
+  // `source_text` is a safe degrade if `tokens` is ever missing/empty.
+  const sourceNodes = useMemo(() => {
     if (!cue) return null;
-    const tokens = cue.ja_tokens && cue.ja_tokens.length ? cue.ja_tokens : [{ t: cue.ja_text }];
+    const tokens = cue.tokens && cue.tokens.length ? cue.tokens : [{ t: cue.source_text }];
     return tokens.map((tok, i) =>
       isRubyToken(tok) ? (
         <ruby key={i}>
@@ -92,14 +92,17 @@ export default function SubtitleOverlay({
   }, [cue]);
 
   // Each layer independently gated on its toggle AND on the cue actually
-  // having content for that layer — a cue with zh_text: null (dsd.md §7
+  // having content for that layer — a cue with target_text: null (dsd.md §7
   // translate-partial degradation) hides the 中 line even when 中 is on
   // (B3.3), and when no cue is active at all (a gap between cues) every
-  // layer is empty, i.e. "show nothing" (dsd.md §6.2).
-  const showJP = subJP && Boolean(cue) && Boolean(jpNodes);
-  const showCN = subCN && Boolean(cue) && Boolean(cue.zh_text);
-  const showRomaji = subRomaji && Boolean(cue) && Boolean(cue.romaji);
-  const hasVisibleContent = showJP || showCN || showRomaji;
+  // layer is empty, i.e. "show nothing" (dsd.md §6.2). `showPhonetic` also
+  // naturally gates a source language with no reading layer (dsd.md §12.6/
+  // §12.7 B5.3): an English doc's cues all have `phonetic: ""` (B5.2), so
+  // this stays false without any language-specific check here.
+  const showSource = subSource && Boolean(cue) && Boolean(sourceNodes);
+  const showTarget = subTarget && Boolean(cue) && Boolean(cue.target_text);
+  const showPhonetic = subPhonetic && Boolean(cue) && Boolean(cue.phonetic);
+  const hasVisibleContent = showSource || showTarget || showPhonetic;
 
   // `shadow` is a 0..1 intensity dialed in per layer (SettingsPopover.jsx) —
   // 0 renders no shadow at all rather than a shadow at alpha 0 (matches
@@ -154,7 +157,7 @@ export default function SubtitleOverlay({
               : null),
           }}
         >
-          {showJP && (
+          {showSource && (
             <div
               style={{
                 fontFamily: "'Noto Sans JP',sans-serif",
@@ -164,45 +167,45 @@ export default function SubtitleOverlay({
                 // staying a fixed px size tuned for the windowed 16:9 box —
                 // clamped so it never goes illegibly small or absurdly
                 // large at the extremes.
-                fontSize: `clamp(${16 * jpStyle.scale}px, ${3.1 * jpStyle.scale}cqw, ${64 * jpStyle.scale}px)`,
-                color: jpStyle.color,
-                textShadow: textShadowFor(jpStyle.shadow, 6),
+                fontSize: `clamp(${16 * sourceStyle.scale}px, ${3.1 * sourceStyle.scale}cqw, ${64 * sourceStyle.scale}px)`,
+                color: sourceStyle.color,
+                textShadow: textShadowFor(sourceStyle.shadow, 6),
                 textAlign: 'center',
                 lineHeight: 1.3,
               }}
             >
-              {jpNodes}
+              {sourceNodes}
             </div>
           )}
-          {showCN && (
+          {showTarget && (
             <div
               style={{
                 fontFamily: "'Noto Sans TC',sans-serif",
                 fontWeight: 500,
-                fontSize: `clamp(${11 * cnStyle.scale}px, ${2 * cnStyle.scale}cqw, ${42 * cnStyle.scale}px)`,
-                color: cnStyle.color,
-                textShadow: textShadowFor(cnStyle.shadow, 5),
+                fontSize: `clamp(${11 * targetStyle.scale}px, ${2 * targetStyle.scale}cqw, ${42 * targetStyle.scale}px)`,
+                color: targetStyle.color,
+                textShadow: textShadowFor(targetStyle.shadow, 5),
                 textAlign: 'center',
                 lineHeight: 1.3,
               }}
             >
-              {cue.zh_text}
+              {cue.target_text}
             </div>
           )}
-          {showRomaji && (
+          {showPhonetic && (
             <div
               style={{
                 fontFamily: '-apple-system,sans-serif',
                 fontStyle: 'italic',
                 fontWeight: 400,
-                fontSize: `clamp(${8 * romajiStyle.scale}px, ${1.5 * romajiStyle.scale}cqw, ${30 * romajiStyle.scale}px)`,
-                color: romajiStyle.color,
-                textShadow: textShadowFor(romajiStyle.shadow, 4),
+                fontSize: `clamp(${8 * phoneticStyle.scale}px, ${1.5 * phoneticStyle.scale}cqw, ${30 * phoneticStyle.scale}px)`,
+                color: phoneticStyle.color,
+                textShadow: textShadowFor(phoneticStyle.shadow, 4),
                 letterSpacing: 0.3,
                 textAlign: 'center',
               }}
             >
-              {cue.romaji}
+              {cue.phonetic}
             </div>
           )}
         </div>

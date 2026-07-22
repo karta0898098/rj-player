@@ -4,8 +4,18 @@ import GenerationOptionsForm from './GenerationOptionsForm.jsx';
 
 const SPEEDS = [0.5, 1, 1.25, 1.5, 2];
 // Per-layer selector-chip dot colors (design handoff §版面結構 5, redesign
-// note #5) — fixed, not theme-dependent.
+// note #5) — fixed, not theme-dependent. Keys stay 'jp'/'cn'/'ro' (matching
+// `layerDefs`'s `key`, not the language-neutral prop names below) since
+// they're just internal chip identifiers, not wire/prop names.
 const LAYER_DOTS = { jp: '#ffffff', cn: '#ffe9a8', ro: '#a8e6ff' };
+
+// Source-layer label (dsd.md §12.6/§12.7 B5.3): language-aware instead of a
+// hardcoded "日文", since the source language isn't always Japanese.
+function sourceLayerLabel(sourceLang) {
+  if (sourceLang === 'ja') return '日文';
+  if (sourceLang === 'en') return '英文';
+  return '原文';
+}
 
 // "+0.5s" / "-1.2s" / "0s" — offset step is 100ms so seconds always land on
 // a single decimal place; drop the decimal entirely for whole seconds.
@@ -35,18 +45,28 @@ export default function SettingsPopover({
   dark,
   speed,
   onSpeedChange,
-  subJP,
-  onToggleSubJP,
-  subCN,
-  onToggleSubCN,
-  subRomaji,
-  onToggleSubRomaji,
-  jpStyle,
-  onJpStyleChange,
-  cnStyle,
-  onCnStyleChange,
-  romajiStyle,
-  onRomajiStyleChange,
+  subSource,
+  onToggleSubSource,
+  subTarget,
+  onToggleSubTarget,
+  subPhonetic,
+  onToggleSubPhonetic,
+  sourceStyle,
+  onSourceStyleChange,
+  targetStyle,
+  onTargetStyleChange,
+  phoneticStyle,
+  onPhoneticStyleChange,
+  // dsd.md §12.6/§12.7 B5.3 — data-driven from the loaded doc: true only
+  // when it actually has a reading/phonetic layer (ja does, en doesn't per
+  // B5.2's `phonetic: ""`). When false, the 羅馬拼音 chip + its 字幕樣式 slot
+  // are omitted entirely below (not just disabled) since there's nothing to
+  // toggle or style.
+  hasPhoneticLayer,
+  // The loaded doc's `language_source` ('ja' | 'en' | ...), used only to
+  // pick the source-layer chip's label (sourceLayerLabel above) — falls
+  // back to 原文 for anything not 'ja'/'en'.
+  sourceLang,
   // dsd.md §7 translate_partial — minimal hint that some 中文 lines are
   // missing translation; shown as a small badge next to the 中文 chip label.
   translatePartial,
@@ -87,18 +107,36 @@ export default function SettingsPopover({
   const [editingLayer, setEditingLayer] = useState('jp');
 
   const layerDefs = [
-    { key: 'jp', label: '日文', on: subJP, onToggle: onToggleSubJP, style: jpStyle, setStyle: onJpStyleChange },
+    {
+      key: 'jp',
+      label: sourceLayerLabel(sourceLang),
+      on: subSource,
+      onToggle: onToggleSubSource,
+      style: sourceStyle,
+      setStyle: onSourceStyleChange,
+    },
     {
       key: 'cn',
       label: '中文',
-      on: subCN,
-      onToggle: onToggleSubCN,
-      style: cnStyle,
-      setStyle: onCnStyleChange,
+      on: subTarget,
+      onToggle: onToggleSubTarget,
+      style: targetStyle,
+      setStyle: onTargetStyleChange,
       badge: translatePartial,
     },
-    { key: 'ro', label: '羅馬拼音', on: subRomaji, onToggle: onToggleSubRomaji, style: romajiStyle, setStyle: onRomajiStyleChange },
-  ];
+    // Omitted entirely (not just disabled) when the loaded doc has no
+    // reading/phonetic layer (dsd.md §12.6/§12.7 B5.3) — makes both the
+    // toggle chip AND its 字幕樣式 style slot below disappear for e.g. an
+    // English video.
+    hasPhoneticLayer && {
+      key: 'ro',
+      label: '羅馬拼音',
+      on: subPhonetic,
+      onToggle: onToggleSubPhonetic,
+      style: phoneticStyle,
+      setStyle: onPhoneticStyleChange,
+    },
+  ].filter(Boolean);
   const selectedLayer = layerDefs.find((l) => l.key === editingLayer) || layerDefs[0];
 
   return (

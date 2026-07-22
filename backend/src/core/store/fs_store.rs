@@ -66,12 +66,22 @@ impl FsStore {
         self.video_dir(video_id).join("audio.wav")
     }
 
-    /// Path to the normalized manual Japanese CC file, if the video had one
-    /// (`YtDlp::fetch_manual_ja_subs` writes here at download time). Mirrors
-    /// `audio_path`/`video_path` -- always returns the path regardless of
-    /// whether the file actually exists; use `cc_exists` to check.
+    /// Path to the normalized manual source-language CC file, if the video
+    /// had one (`YtDlp::fetch_captions` writes here at download
+    /// time). Mirrors `audio_path`/`video_path` -- always returns the path
+    /// regardless of whether the file actually exists; use `cc_exists` to
+    /// check.
     pub fn cc_path(&self, video_id: &str) -> PathBuf {
         self.video_dir(video_id).join("cc.srt")
+    }
+
+    /// Path to the normalized manual **target**-language (Chinese) CC file,
+    /// if the video had one (`YtDlp::fetch_captions` writes here at download
+    /// time, dsd.md §12.4/§12.5/§12.7 B5.5). Mirrors `cc_path` exactly --
+    /// always returns the path regardless of whether the file actually
+    /// exists; use `target_cc_exists` to check.
+    pub fn target_cc_path(&self, video_id: &str) -> PathBuf {
+        self.video_dir(video_id).join("cc.zh.srt")
     }
 
     pub fn meta_path(&self, video_id: &str) -> PathBuf {
@@ -80,6 +90,13 @@ impl FsStore {
 
     pub fn subtitles_path(&self, video_id: &str) -> PathBuf {
         self.video_dir(video_id).join("subtitles.json")
+    }
+
+    /// Path to the poster thumbnail (`YtDlp::fetch_thumbnail` writes here at
+    /// download time). Like `cc_path`, always returns the path regardless of
+    /// whether the file exists; use `thumbnail_exists` to check.
+    pub fn thumbnail_path(&self, video_id: &str) -> PathBuf {
+        self.video_dir(video_id).join("thumbnail.jpg")
     }
 
     /// Ensure `<data_dir>/videos/<video_id>/` exists.
@@ -152,6 +169,39 @@ impl FsStore {
     /// Whisper ASR).
     pub fn cc_exists(&self, video_id: &str) -> bool {
         self.cc_path(video_id).exists()
+    }
+
+    /// Whether a manual target-language (Chinese) CC file was fetched for
+    /// this video (dsd.md §12.4/§12.5/§12.7 B5.5's target-track skip-
+    /// translation path).
+    pub fn target_cc_exists(&self, video_id: &str) -> bool {
+        self.target_cc_path(video_id).exists()
+    }
+
+    /// Whether a poster thumbnail was fetched for this video (library
+    /// listing / `GET /media/:id/thumbnail`).
+    pub fn thumbnail_exists(&self, video_id: &str) -> bool {
+        self.thumbnail_path(video_id).exists()
+    }
+
+    /// Whether a finished `subtitles.json` exists (library listing's
+    /// `has_subtitles` flag). Cheap existence check only -- does not read or
+    /// validate the doc.
+    pub fn subtitles_exist(&self, video_id: &str) -> bool {
+        self.subtitles_path(video_id).exists()
+    }
+
+    /// Delete a video's entire on-disk folder (`<data_dir>/videos/<video_id>/`
+    /// and everything in it: mp4/audio/subtitles/thumbnail/meta). Used by
+    /// `DELETE /api/videos/:id` to reclaim space. Idempotent: a missing
+    /// directory is treated as already-deleted (`Ok`), not an error.
+    pub async fn delete_video(&self, video_id: &str) -> Result<(), StoreError> {
+        let dir = self.video_dir(video_id);
+        match fs::remove_dir_all(&dir).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Load `subtitles.json` for a video, if it exists (dsd.md §5.1/§5.2).

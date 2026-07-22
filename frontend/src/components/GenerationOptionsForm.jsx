@@ -12,8 +12,26 @@ export const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3'];
 // the "這是一首音樂 MV" checkbox (the add-to-queue form does; the regenerate
 // panel in SettingsPopover doesn't, since is_music_video is only persisted
 // at initial submission, not on regenerate).
+//
+// `sourceLang`/`onSourceLangChange` are likewise optional (dsd.md §12.6/
+// §12.7 B5.3): pass both to render a 來源語言 (source_lang) selector at the
+// top of the form — only the add-to-queue form does, since source_lang is
+// only settable at initial submission (regenerate reuses the video's
+// already-stored source_lang). When `sourceLang === 'en'`, the Japanese-only
+// controls in this form (音樂 MV, 正確歌詞) hide themselves — Whisper model/
+// temperature/VAD/initial_prompt stay visible since they're language-agnostic.
+//
+// `maxHeight`/`onMaxHeightChange` are likewise optional (per-video quality
+// picker): pass both to render a 畫質 (max_height) selector right below the
+// source-language one — only the add-to-queue form does, since the quality
+// cap is only settable at initial submission (the video is already
+// downloaded at whatever resolution by the time a regenerate would run).
 export default function GenerationOptionsForm({
   theme,
+  sourceLang,
+  onSourceLangChange,
+  maxHeight,
+  onMaxHeightChange,
   whisperModel,
   onWhisperModelChange,
   whisperTemperature,
@@ -50,7 +68,39 @@ export default function GenerationOptionsForm({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {onIsMusicVideoChange && (
+      {onSourceLangChange && (
+        <div>
+          <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>來源語言 (source_lang)</div>
+          <select
+            value={sourceLang}
+            onChange={(e) => onSourceLangChange(e.target.value)}
+            style={compactInputStyle}
+          >
+            <option value="ja">日文</option>
+            <option value="en">英文</option>
+          </select>
+        </div>
+      )}
+
+      {onMaxHeightChange && (
+        <div>
+          <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>畫質 (max_height)</div>
+          <select
+            value={maxHeight}
+            onChange={(e) => onMaxHeightChange(Number(e.target.value))}
+            style={compactInputStyle}
+          >
+            <option value={0}>最佳</option>
+            <option value={2160}>2160p (4K)</option>
+            <option value={1440}>1440p</option>
+            <option value={1080}>1080p</option>
+            <option value={720}>720p</option>
+            <option value={480}>480p</option>
+          </select>
+        </div>
+      )}
+
+      {onIsMusicVideoChange && sourceLang !== 'en' && (
         <div>
           <label
             style={{
@@ -220,21 +270,23 @@ export default function GenerationOptionsForm({
         />
       </div>
 
-      <div>
-        <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>
-          正確歌詞（選填，一行一句）
+      {sourceLang !== 'en' && (
+        <div>
+          <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>
+            正確歌詞（選填，一行一句）
+          </div>
+          <textarea
+            rows={5}
+            value={referenceLyrics}
+            onChange={(e) => onReferenceLyricsChange(e.target.value)}
+            placeholder="貼上這首歌的正確歌詞，一行一句。填了會用你的歌詞去對齊時間（文字保證正確）；留空則照常自動辨識。"
+            style={{ ...compactInputStyle, resize: 'vertical' }}
+          />
+          <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
+            有填＝forced alignment（文字用你的、只對時間，最準）；留空＝自動辨識。
+          </div>
         </div>
-        <textarea
-          rows={5}
-          value={referenceLyrics}
-          onChange={(e) => onReferenceLyricsChange(e.target.value)}
-          placeholder="貼上這首歌的正確歌詞，一行一句。填了會用你的歌詞去對齊時間（文字保證正確）；留空則照常自動辨識。"
-          style={{ ...compactInputStyle, resize: 'vertical' }}
-        />
-        <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
-          有填＝forced alignment（文字用你的、只對時間，最準）；留空＝自動辨識。
-        </div>
-      </div>
+      )}
 
       {onResetGenerationSettings && (
         <button

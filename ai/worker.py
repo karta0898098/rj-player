@@ -16,11 +16,12 @@ Methods:
                          `error` (optionally carrying a `partial` doc). Also
                          emits one `partial_result` event right after romaji
                          (before translate starts) carrying a snapshot doc
-                         with ja/tokens/romaji filled and zh_text null, so
-                         the Rust side can persist that work immediately
-                         instead of only on the terminal event.
+                         with source_text/tokens/phonetic filled and
+                         target_text null, so the Rust side can persist that
+                         work immediately instead of only on the terminal
+                         event.
   retranslate        -> re-runs ONLY the translate stage against caller-
-                         supplied cues (ja_text/ja_tokens/romaji/timing
+                         supplied cues (source_text/tokens/phonetic/timing
                          already filled in, from an existing subtitles.json)
                          -- no ASR. Same terminal `result`/`error` shape as
                          generate_subtitles.
@@ -36,7 +37,30 @@ import json
 import os
 import sys
 
-from pipeline import align, asr, assemble, cc, protocol, romaji, tokenizer, translate
+from pipeline import align, asr, assemble, cc, protocol, translate
+
+# tokenizer/romaji are imported lazily (inside the `reading` branch of
+# run_generate_subtitles below) rather than here at module scope: both pull
+# in fugashi/pykakasi eagerly at *their* module scope, and those are only
+# ever needed for source languages whose profile has `reading: True` (today,
+# just `ja`). Keeping them out of this module's top-level imports means
+# `import worker` (and anything that only needs e.g. `profile_for`, like
+# ai/tests/) stays cheap and doesn't require those deps installed at all.
+
+# dsd.md §12.2: language profile matrix -- which source languages get the
+# tokenize+phonetic ("reading") stages. `reading: True` -> ja-style fugashi
+# tokenize -> pykakasi romaji; `reading: False` -> skip both, cues carry
+# `tokens: []` / `phonetic: ""`. Unknown source languages fall back to
+# DEFAULT_PROFILE (2-layer: source + target only), same as `en` today.
+PROFILES = {"ja": {"reading": True}, "en": {"reading": False}}
+DEFAULT_PROFILE = {"reading": False}
+
+
+def profile_for(source_lang: str) -> dict:
+    """Pure lookup into PROFILES, defaulting unknown source languages to
+    DEFAULT_PROFILE. No I/O, no side effects -- safe to unit test directly.
+    """
+    return PROFILES.get(source_lang, DEFAULT_PROFILE)
 
 
 def handle_ping(req_id) -> None:
@@ -80,19 +104,27 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
     # correct. Empty string or omitted both collapse to None -- "no
     # reference lyrics" -- same shape as `initial_prompt` above.
     reference_lyrics = params.get("reference_lyrics") or None
-    # Manual Japanese CC, fetched at download time by `backend/src/core/
-    # downloader/ytdlp.rs`'s `fetch_manual_ja_subs` and threaded through by
+    # Manual source-language CC, fetched at download time by `backend/src/
+    # core/downloader/ytdlp.rs`'s `fetch_captions` and threaded through by
     # `backend/src/core/pipeline/orchestrator.rs` whenever `FsStore::
     # cc_exists` is true. Precedence (highest wins): reference_lyrics > CC >
     # Whisper ASR -- a manual CC track already has correct text AND timing,
     # so it beats free transcription, but a user-pasted reference lyrics
     # override always wins outright.
     cc_path = params.get("cc_path") or None
+    # Manual target-language (Chinese) CC, fetched at download time by
+    # `backend/src/core/downloader/ytdlp.rs`'s `fetch_captions` and threaded
+    # through by `backend/src/core/pipeline/orchestrator.rs` whenever
+    # `FsStore::target_cc_exists` is true (dsd.md §12.4/§12.5/§12.7, B5.5).
+    # When present, the translate stage below time-overlap-merges it onto
+    # the source timeline instead of calling the LLM.
+    target_cc_path = params.get("target_cc_path") or None
 
     current_stage = "asr"
     cues: list[dict] = []
     duration_ms: int | None = None
     source: str | None = None
+    target_source: str | None = None
 
     try:
         # ---- ASR, or one of its two higher-precedence substitutes ----
@@ -142,41 +174,55 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 "id": i,
                 "start_ms": seg["start_ms"],
                 "end_ms": seg["end_ms"],
-                "ja_text": seg["text"],
+                "source_text": seg["text"],
             }
             for i, seg in enumerate(raw_segments)
         ]
         total = len(cues) or 1
 
-        # ---- Tokenize ----
-        current_stage = "tokenize"
-        emit_fn({"id": req_id, "event": "stage", "stage": "tokenize", "status": "start"})
-        for i, cue in enumerate(cues):
-            cue["ja_tokens"] = tokenizer.tokenize(cue["ja_text"])
-            emit_fn(
-                {
-                    "id": req_id,
-                    "event": "progress",
-                    "stage": "tokenize",
-                    "pct": int((i + 1) / total * 100),
-                }
-            )
-        emit_fn({"id": req_id, "event": "stage", "stage": "tokenize", "status": "done"})
+        # ---- Tokenize + Romaji ("reading" stages, dsd.md §12.2/§12.3) ----
+        # Only source languages whose profile has `reading: True` (today,
+        # just `ja`) get fugashi tokenize -> pykakasi romaji; every other
+        # source language (en, or any future unlisted one) skips both
+        # stages entirely -- no stage/progress events emitted for them --
+        # and gets `tokens: []` / `phonetic: ""` so the doc still has valid
+        # shape for the Rust `Cue` struct. `source_lang` defaults to "ja"
+        # above, so omitting it anywhere upstream reproduces today's
+        # behavior exactly.
+        if profile_for(source_lang)["reading"]:
+            from pipeline import romaji, tokenizer  # lazy: see import note up top
 
-        # ---- Romaji ----
-        current_stage = "romaji"
-        emit_fn({"id": req_id, "event": "stage", "stage": "romaji", "status": "start"})
-        for i, cue in enumerate(cues):
-            cue["romaji"] = romaji.build_romaji(cue["ja_tokens"])
-            emit_fn(
-                {
-                    "id": req_id,
-                    "event": "progress",
-                    "stage": "romaji",
-                    "pct": int((i + 1) / total * 100),
-                }
-            )
-        emit_fn({"id": req_id, "event": "stage", "stage": "romaji", "status": "done"})
+            current_stage = "tokenize"
+            emit_fn({"id": req_id, "event": "stage", "stage": "tokenize", "status": "start"})
+            for i, cue in enumerate(cues):
+                cue["tokens"] = tokenizer.tokenize(cue["source_text"])
+                emit_fn(
+                    {
+                        "id": req_id,
+                        "event": "progress",
+                        "stage": "tokenize",
+                        "pct": int((i + 1) / total * 100),
+                    }
+                )
+            emit_fn({"id": req_id, "event": "stage", "stage": "tokenize", "status": "done"})
+
+            current_stage = "romaji"
+            emit_fn({"id": req_id, "event": "stage", "stage": "romaji", "status": "start"})
+            for i, cue in enumerate(cues):
+                cue["phonetic"] = romaji.build_romaji(cue["tokens"])
+                emit_fn(
+                    {
+                        "id": req_id,
+                        "event": "progress",
+                        "stage": "romaji",
+                        "pct": int((i + 1) / total * 100),
+                    }
+                )
+            emit_fn({"id": req_id, "event": "stage", "stage": "romaji", "status": "done"})
+        else:
+            for cue in cues:
+                cue["tokens"] = []
+                cue["phonetic"] = ""
 
         # ---- Persist a pre-translate snapshot ----
         # ASR (often the slowest, priciest stage -- large-v3 on a full song)
@@ -184,16 +230,17 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
         # network round-trip to an LLM that can retry for a while (rate
         # limits, RECITATION blocks on song lyrics, etc.) before it even
         # degrades gracefully. Emitting this now lets the Rust side persist
-        # ja_text/ja_tokens/romaji to subtitles.json immediately, so that work
-        # is never at risk regardless of how translate goes -- and gives
+        # source_text/tokens/phonetic to subtitles.json immediately, so that
+        # work is never at risk regardless of how translate goes -- and gives
         # run_retranslate (below) something to re-run translate against
-        # later without redoing ASR. `zh_text` is set to `None` on every cue
-        # first purely so this snapshot's shape matches the final doc (the
-        # Rust `Cue` struct requires the key present, even if null).
+        # later without redoing ASR. `target_text` is set to `None` on every
+        # cue first purely so this snapshot's shape matches the final doc
+        # (the Rust `Cue` struct requires the key present, even if null).
         for cue in cues:
-            cue.setdefault("zh_text", None)
+            cue.setdefault("target_text", None)
         pretranslate_doc = assemble.assemble(
-            video_id, source_lang, target_lang, duration_ms, cues, False, False, source
+            video_id, source_lang, target_lang, duration_ms, cues, False, False, source,
+            target_source=None,
         )
         emit_fn({"id": req_id, "event": "partial_result", "subtitles": pretranslate_doc})
 
@@ -202,26 +249,45 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
         degraded = False
         if do_translate:
             emit_fn({"id": req_id, "event": "stage", "stage": "translate", "status": "start"})
-            ja_texts = [c["ja_text"] for c in cues]
-            zh_texts, degraded = translate.translate_segments(
-                ja_texts,
-                target_lang,
-                on_progress=lambda pct: emit_fn(
-                    {"id": req_id, "event": "progress", "stage": "translate", "pct": pct}
-                ),
-            )
-            for cue, zh in zip(cues, zh_texts):
-                cue["zh_text"] = zh
+            if target_cc_path and os.path.exists(target_cc_path):
+                # B5.5 (dsd.md §12.4/§12.5/§12.7): a manual Chinese CC track
+                # exists for this video -- time-overlap-merge it onto the
+                # source timeline (cc.merge_target_captions) instead of
+                # calling the LLM. NO LLM call in this branch -- a video
+                # with both a source CC and a Chinese CC needs zero Whisper
+                # AND zero LLM calls.
+                target_segments, _ = cc.load_cc(target_cc_path)
+                merged = cc.merge_target_captions(cues, target_segments)
+                for cue, zh in zip(cues, merged):
+                    cue["target_text"] = zh
+                target_source = "cc"
+                degraded = False
+                protocol.log(f"[translate] using official Chinese CC ({len(cues)} cues merged)")
+            else:
+                source_texts = [c["source_text"] for c in cues]
+                target_texts, degraded = translate.translate_segments(
+                    source_texts,
+                    target_lang,
+                    source_lang,
+                    on_progress=lambda pct: emit_fn(
+                        {"id": req_id, "event": "progress", "stage": "translate", "pct": pct}
+                    ),
+                )
+                for cue, zh in zip(cues, target_texts):
+                    cue["target_text"] = zh
+                target_source = "llm"
             emit_fn({"id": req_id, "event": "stage", "stage": "translate", "status": "done"})
         else:
             for cue in cues:
-                cue["zh_text"] = None
+                cue["target_text"] = None
+            target_source = None
 
         # ---- Assemble ----
         current_stage = "assemble"
         emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "start"})
         doc = assemble.assemble(
-            video_id, source_lang, target_lang, duration_ms, cues, do_translate, degraded, source
+            video_id, source_lang, target_lang, duration_ms, cues, do_translate, degraded, source,
+            target_source=target_source,
         )
         emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "done"})
 
@@ -246,9 +312,9 @@ def run_retranslate(req_id, params: dict, emit_fn=protocol.emit) -> dict | None:
     `partial_result` event) -- lets a translate-only failure/degradation be
     retried without redoing ASR (dsd.md §7's "don't throw away completed
     work", extended to the common case, not just crash forensics). `cues`
-    comes in with `ja_text`/`ja_tokens`/`romaji`/`start_ms`/`end_ms` already
+    comes in with `source_text`/`tokens`/`phonetic`/`start_ms`/`end_ms` already
     set (straight from the existing subtitles.json on the Rust side) --
-    those are passed through untouched; only `zh_text` is overwritten.
+    those are passed through untouched; only `target_text` is overwritten.
     """
     video_id = params.get("video_id")
     source_lang = params.get("source_lang", "ja")
@@ -259,21 +325,26 @@ def run_retranslate(req_id, params: dict, emit_fn=protocol.emit) -> dict | None:
 
     try:
         emit_fn({"id": req_id, "event": "stage", "stage": "translate", "status": "start"})
-        ja_texts = [c["ja_text"] for c in cues]
-        zh_texts, degraded = translate.translate_segments(
-            ja_texts,
+        source_texts = [c["source_text"] for c in cues]
+        target_texts, degraded = translate.translate_segments(
+            source_texts,
             target_lang,
+            source_lang,
             on_progress=lambda pct: emit_fn(
                 {"id": req_id, "event": "progress", "stage": "translate", "pct": pct}
             ),
         )
-        for cue, zh in zip(cues, zh_texts):
-            cue["zh_text"] = zh
+        for cue, zh in zip(cues, target_texts):
+            cue["target_text"] = zh
         emit_fn({"id": req_id, "event": "stage", "stage": "translate", "status": "done"})
 
         emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "start"})
+        # run_retranslate always calls the LLM (see the translate_segments
+        # call above -- there's no CC-merge branch here), so target_source
+        # is unconditionally "llm" (dsd.md §12.4/§12.5/§12.7, B5.5).
         doc = assemble.assemble(
-            video_id, source_lang, target_lang, duration_ms, cues, True, degraded, source
+            video_id, source_lang, target_lang, duration_ms, cues, True, degraded, source,
+            target_source="llm",
         )
         emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "done"})
 
@@ -311,14 +382,14 @@ def selftest(audio_path: str) -> None:
 
     all_ok = True
     for cue in doc["cues"]:
-        joined = "".join(t["t"] for t in cue["ja_tokens"])
-        if joined != cue["ja_text"]:
+        joined = "".join(t["t"] for t in cue["tokens"])
+        if joined != cue["source_text"]:
             all_ok = False
-            protocol.log(f"[selftest] MISMATCH cue {cue['id']}: {joined!r} != {cue['ja_text']!r}")
+            protocol.log(f"[selftest] MISMATCH cue {cue['id']}: {joined!r} != {cue['source_text']!r}")
 
     protocol.log(
         f"[selftest] SUMMARY: segments={len(doc['cues'])} "
-        f"ja_tokens==ja_text invariant: {'PASS' if all_ok else 'FAIL'} "
+        f"tokens==source_text invariant: {'PASS' if all_ok else 'FAIL'} "
         f"translate_partial={doc.get('translate_partial', False)}"
     )
     if doc["cues"]:

@@ -23,6 +23,7 @@ export default function ControlBar({
   currentTime,
   duration,
   onSeek,
+  previewSrc,
   disabled,
   isPlaying,
   onTogglePlay,
@@ -41,7 +42,14 @@ export default function ControlBar({
 }) {
   return (
     <div style={{ margin: '14px 20px 20px', display: 'flex', flexDirection: 'column', gap: 10, position: 'relative' }}>
-      <ProgressTrack theme={theme} currentTime={currentTime} duration={duration} onSeek={onSeek} disabled={disabled} />
+      <ProgressTrack
+        theme={theme}
+        currentTime={currentTime}
+        duration={duration}
+        onSeek={onSeek}
+        previewSrc={previewSrc}
+        disabled={disabled}
+      />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <button

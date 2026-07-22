@@ -17,11 +17,11 @@ pub const SUBTITLE_DOC_VERSION: u32 = 1;
 /// One token of a tokenized Japanese sentence (dsd.md §4.2).
 ///
 /// `t` is the surface form; concatenating every token's `t` in order must
-/// reconstruct the cue's `ja_text` exactly (this is what lets the frontend
+/// reconstruct the cue's `source_text` exactly (this is what lets the frontend
 /// render `<ruby>` for kanji tokens while falling back to plain text for
 /// everything else, without losing the original sentence layout).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JaToken {
+pub struct Token {
     pub t: String,
     /// Furigana reading, present only for tokens that need one (kanji).
     /// Omitted from JSON entirely when absent, rather than serialized as
@@ -36,14 +36,19 @@ pub struct Cue {
     pub id: u32,
     pub start_ms: u64,
     pub end_ms: u64,
-    pub ja_text: String,
-    pub ja_tokens: Vec<JaToken>,
-    pub romaji: String,
+    #[serde(alias = "ja_text")]
+    pub source_text: String,
+    #[serde(alias = "ja_tokens")]
+    pub tokens: Vec<Token>,
+    #[serde(alias = "romaji")]
+    pub phonetic: String,
     /// Translated text. Explicitly nullable (serialized as JSON `null`, not
     /// omitted) so a translation failure can degrade gracefully — the doc
-    /// still lands with ja + romaji intact and the frontend leaves the zh
-    /// layer blank instead of losing the whole cue (dsd.md §7).
-    pub zh_text: Option<String>,
+    /// still lands with source text + phonetic intact and the frontend
+    /// leaves the target layer blank instead of losing the whole cue
+    /// (dsd.md §7).
+    #[serde(alias = "zh_text")]
+    pub target_text: Option<String>,
 }
 
 /// The canonical three-layer subtitle document (dsd.md §5.1), persisted as
@@ -59,12 +64,12 @@ pub struct SubtitleDoc {
     pub cues: Vec<Cue>,
     /// Set by the Python worker when translation was requested but degraded
     /// (missing API key or repeated LLM failure) — the doc still lands with
-    /// ja + romaji and null `zh_text`s (dsd.md §7). Preserved verbatim through
+    /// source text + phonetic and null `target_text`s (dsd.md §7). Preserved verbatim through
     /// the Rust round-trip so the frontend can surface a "translation
     /// incomplete" hint; absent on the fully-translated / no-translation paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translate_partial: Option<bool>,
-    /// Which ASR-stage source produced the `ja_text`/timing for this doc's
+    /// Which ASR-stage source produced the `source_text`/timing for this doc's
     /// cues: `"asr"` (Whisper free transcription), `"cc"` (manual Japanese
     /// closed captions), or `"align"` (forced alignment against
     /// user-supplied `reference_lyrics`). Set by `ai/pipeline/assemble.py`;
@@ -72,4 +77,11 @@ pub struct SubtitleDoc {
     /// before this field existed) deserializing fine as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Which stage produced `target_text`: `"cc"` (a manual Chinese CC
+    /// track was time-overlap-merged onto the source timeline, dsd.md
+    /// §12.4/§12.5/§12.7 B5.5 -- zero LLM calls) or `"llm"`
+    /// (machine-translated). Absent means no translation was attempted.
+    /// Additive, just like `source` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_source: Option<String>,
 }

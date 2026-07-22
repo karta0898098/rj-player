@@ -234,10 +234,16 @@ async fn process_download_job(
         );
     }
 
+    // The per-video quality picker (add-to-queue form): `meta.max_height`
+    // is `None` for old/non-form videos (falls through to `ytdlp`'s own
+    // configured default, unchanged behavior), `Some(0)` for "best
+    // available" (uncapped), or `Some(h)` for an explicit cap.
+    let format = YtDlp::format_for_max_height(meta.max_height, ytdlp.default_format());
+
     let video_path = store.video_path(&video_id);
     let video_id_for_cb = video_id.clone();
     let download_result = ytdlp
-        .download_video(&url, &video_path, move |event| match event {
+        .download_video(&url, &video_path, &format, move |event| match event {
             ProgressEvent::Percent(pct) => {
                 hub.publish(
                     &video_id_for_cb,
@@ -271,27 +277,47 @@ async fn process_download_job(
         );
     }
 
-    // Manual Japanese CC (dsd.md's ASR-precedence extension: reference_lyrics
-    // > manual CC > Whisper ASR). Mirrors audio extraction above -- a fetch
-    // failure, or the video simply having no manual ja captions (the normal
-    // outcome for most videos), must never block marking it downloaded/usable;
-    // the pipeline just falls back to Whisper ASR.
+    // Manual source-language + Chinese CC, fetched in one pass (dsd.md
+    // §12.4/§12.5/§12.7 B5.5): reference_lyrics > manual source CC > Whisper
+    // ASR for the source track, and a manual Chinese CC lets the worker skip
+    // the LLM translate call entirely. Mirrors audio extraction above -- a
+    // fetch failure, or the video simply having no manual captions in either
+    // language (the normal outcome for most videos), must never block
+    // marking it downloaded/usable; the pipeline just falls back to Whisper
+    // ASR / LLM translation as needed.
     let cc_path = store.cc_path(&video_id);
-    match ytdlp.fetch_manual_ja_subs(&url, &cc_path).await {
-        Ok(true) => {
-            tracing::info!(%video_id, "found manual Japanese CC, saved as cc.srt");
-        }
-        Ok(false) => {
-            tracing::info!(%video_id, "no manual Japanese CC available for this video");
+    let target_cc_path = store.target_cc_path(&video_id);
+    let source_lang = meta.source_lang.as_deref().unwrap_or("ja");
+    match ytdlp
+        .fetch_captions(&url, &cc_path, &target_cc_path, source_lang)
+        .await
+    {
+        Ok((source_found, target_found)) => {
+            tracing::info!(
+                %video_id, source_lang, source_found, target_found,
+                "manual CC fetch done (source-language CC found?, Chinese CC found?)"
+            );
         }
         Err(err) => {
-            tracing::warn!(%video_id, %err, "manual Japanese CC fetch failed (non-fatal)");
+            tracing::warn!(%video_id, source_lang, %err, "manual CC fetch failed (non-fatal)");
             hub.publish(
                 &video_id,
                 JobEvent::Log {
-                    line: format!("manual Japanese CC fetch failed (non-fatal): {err}"),
+                    line: format!("manual CC fetch failed (non-fatal): {err}"),
                 },
             );
+        }
+    }
+
+    // Poster thumbnail for the video library grid. Same non-fatal contract as
+    // audio extraction / CC above: a failure (or a video with no fetchable
+    // thumbnail) must never block marking it downloaded/usable.
+    let thumbnail_path = store.thumbnail_path(&video_id);
+    match ytdlp.fetch_thumbnail(&url, &thumbnail_path).await {
+        Ok(true) => tracing::info!(%video_id, "saved poster thumbnail"),
+        Ok(false) => tracing::info!(%video_id, "no thumbnail available for this video"),
+        Err(err) => {
+            tracing::warn!(%video_id, %err, "thumbnail fetch failed (non-fatal)");
         }
     }
 

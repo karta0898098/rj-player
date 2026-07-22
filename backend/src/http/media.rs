@@ -35,3 +35,28 @@ pub async fn serve_video(
         ))),
     }
 }
+
+/// `GET /media/:id/thumbnail` — the poster JPEG fetched at download time
+/// (`YtDlp::fetch_thumbnail`), for the video-library grid. `404` when the
+/// video had no fetchable thumbnail (or predates the feature); the frontend
+/// falls back to a placeholder tile.
+pub async fn serve_thumbnail(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    let path = state.store.thumbnail_path(&id);
+    if !path.exists() {
+        return Err(ApiError::not_found(format!("no thumbnail for id {id}")));
+    }
+
+    // `.jpg` extension → `ServeFile` resolves Content-Type to `image/jpeg`.
+    let service = ServeFile::new(&path);
+
+    match service.oneshot(request).await {
+        Ok(response) => Ok(response.into_response()),
+        Err(err) => Err(ApiError::internal(format!(
+            "failed to serve thumbnail file: {err}"
+        ))),
+    }
+}

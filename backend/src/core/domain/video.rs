@@ -89,6 +89,25 @@ pub struct VideoMeta {
     /// behavior. `#[serde(default)]` for the same on-disk-compat reason.
     #[serde(default)]
     pub queued_options: Option<crate::core::pipeline::PipelineOverrides>,
+    /// The video's source language (dsd.md §12.2/§12.5), chosen at
+    /// `POST /api/videos` time and persisted so `regenerate` reuses it.
+    /// `None` means "ja" (the only source language before this field
+    /// existed) -- every reader that cares defaults it explicitly, so this
+    /// stays the exact today-behavior for old on-disk `meta.json` files and
+    /// any caller that never sends `source_lang`. `#[serde(default)]` for
+    /// the same on-disk-compat reason as `is_music_video`/`queued_options`.
+    #[serde(default)]
+    pub source_lang: Option<String>,
+    /// Per-video quality cap chosen at `POST /api/videos` time (the
+    /// per-video quality picker, dsd.md queue feature extension): the
+    /// yt-dlp `-f` selector's `height<=N` cap. `None` means "use
+    /// `config.yt_dlp_format`'s default cap (1080p)" -- the exact
+    /// today-behavior for old on-disk `meta.json` files and any caller that
+    /// never sends `max_height`. `Some(0)` means uncapped ("best available").
+    /// `#[serde(default)]` for the same on-disk-compat reason as
+    /// `source_lang`/`queued_options`.
+    #[serde(default)]
+    pub max_height: Option<u32>,
 }
 
 impl VideoMeta {
@@ -106,11 +125,19 @@ impl VideoMeta {
             created_at: Utc::now(),
             is_music_video: false,
             queued_options: None,
+            source_lang: None,
+            max_height: None,
         }
     }
 }
 
 /// Lightweight summary used in the video library listing (`GET /api/videos`).
+///
+/// `created_at`/`has_subtitles`/`has_thumbnail` back the library grid's sort
+/// (by date added), the subtitle-status badge, and the poster thumbnail. The
+/// two `has_*` flags are filesystem facts not stored in `meta.json`, so
+/// `From<&VideoMeta>` leaves them `false`; the `GET /api/videos` handler fills
+/// them in from `store` existence checks (see `videos::list_videos`).
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoSummary {
     pub video_id: String,
@@ -119,6 +146,13 @@ pub struct VideoSummary {
     pub status: VideoStatus,
     pub duration_ms: u64,
     pub is_music_video: bool,
+    pub created_at: DateTime<Utc>,
+    pub has_subtitles: bool,
+    pub has_thumbnail: bool,
+    /// Forward-looking for B5.3's source-language selector UI: always a
+    /// concrete code (never `null`), defaulting `meta.source_lang`'s `None`
+    /// to `"ja"` here so the frontend never has to.
+    pub source_lang: String,
 }
 
 impl From<&VideoMeta> for VideoSummary {
@@ -130,6 +164,10 @@ impl From<&VideoMeta> for VideoSummary {
             status: m.status,
             duration_ms: m.duration_ms,
             is_music_video: m.is_music_video,
+            created_at: m.created_at,
+            has_subtitles: false,
+            has_thumbnail: false,
+            source_lang: m.source_lang.clone().unwrap_or_else(|| "ja".to_string()),
         }
     }
 }

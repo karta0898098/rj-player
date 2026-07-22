@@ -83,12 +83,21 @@ pub struct GenerateSubtitlesParams {
     /// doesn't need to know or care which one will actually win.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_path: Option<String>,
+    /// Path to the manual target-language (Chinese) CC file fetched at
+    /// download time (`FsStore::target_cc_path`), when the video had one
+    /// (`FsStore::target_cc_exists`, dsd.md §12.4/§12.5/§12.7 B5.5).
+    /// `None`/omitted -> `ai/worker.py` has no Chinese CC to consider and
+    /// falls back to its normal LLM translate path. `Some` -> the worker
+    /// time-overlap-merges the Chinese CC onto the source timeline instead
+    /// of calling the LLM, setting `doc.target_source == "cc"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_cc_path: Option<String>,
 }
 
 /// Params for the `retranslate` RPC method — re-runs ONLY the translate
 /// stage against `cues` from an existing `SubtitleDoc` (no ASR). `cues`
-/// carries `ja_text`/`ja_tokens`/`romaji`/timing straight through
-/// unmodified; the worker only overwrites `zh_text`. Everything else
+/// carries `source_text`/`tokens`/`phonetic`/timing straight through
+/// unmodified; the worker only overwrites `target_text`. Everything else
 /// mirrors the corresponding fields of the doc being retranslated.
 #[derive(Debug, Clone, Serialize)]
 pub struct RetranslateParams {
@@ -128,8 +137,8 @@ pub enum WorkerProgress {
     Stage(Stage),
     /// Percent-complete progress within a stage.
     Progress { stage: Stage, pct: u8 },
-    /// A pre-translate snapshot doc (ja_text/ja_tokens/romaji filled,
-    /// zh_text null) emitted right after the romaji stage, before translate
+    /// A pre-translate snapshot doc (source_text/tokens/phonetic filled,
+    /// target_text null) emitted right after the romaji stage, before translate
     /// starts — lets the caller persist that work immediately rather than
     /// only on the terminal `result`/`error` (see `ai/worker.py`'s
     /// `partial_result` event and dsd.md §7's "don't throw away completed
@@ -390,9 +399,9 @@ impl RpcClient {
 
     /// Re-run ONLY the translate stage against already-computed cues (dsd.md
     /// §7 extended: retry translation without redoing ASR). `params.cues`
-    /// carries `ja_text`/`ja_tokens`/`romaji`/timing straight from an
+    /// carries `source_text`/`tokens`/`phonetic`/timing straight from an
     /// existing `subtitles.json` — the worker passes those through untouched
-    /// and only overwrites `zh_text`. Same terminal shape as
+    /// and only overwrites `target_text`. Same terminal shape as
     /// `generate_subtitles`: blocks until a `result` or `error`, invoking
     /// `on_progress` for `stage`/`progress` events along the way.
     pub async fn retranslate(
@@ -630,6 +639,7 @@ mod tests {
                     vad: VadParams::default(),
                     reference_lyrics: None,
                     cc_path: None,
+                    target_cc_path: None,
                 },
                 |event| match event {
                     WorkerProgress::Stage(_) => saw_stage = true,
@@ -647,11 +657,11 @@ mod tests {
         assert_eq!(doc.cues.len(), 1);
         assert_eq!(
             doc.cues[0]
-                .ja_tokens
+                .tokens
                 .iter()
                 .map(|t| t.t.as_str())
                 .collect::<String>(),
-            doc.cues[0].ja_text
+            doc.cues[0].source_text
         );
     }
 
@@ -673,6 +683,7 @@ mod tests {
                     vad: VadParams::default(),
                     reference_lyrics: None,
                     cc_path: None,
+                    target_cc_path: None,
                 },
                 |_event| {},
             )
@@ -720,6 +731,7 @@ mod tests {
             vad: VadParams::default(),
             reference_lyrics: None,
             cc_path: None,
+            target_cc_path: None,
         }
     }
 
@@ -737,5 +749,29 @@ mod tests {
         };
         let json = serde_json::to_string(&params).unwrap();
         assert!(json.contains("\"cc_path\":\"/data/videos/abc123/cc.srt\""), "got: {json}");
+    }
+
+    /// dsd.md §12.4/§12.5/§12.7 (B5.5): mirrors the `cc_path_*_json` pair
+    /// above for the new `target_cc_path` field.
+    #[test]
+    fn target_cc_path_omitted_from_json_when_none() {
+        let json = serde_json::to_string(&base_params()).unwrap();
+        assert!(
+            !json.contains("target_cc_path"),
+            "target_cc_path should be omitted when None: {json}"
+        );
+    }
+
+    #[test]
+    fn target_cc_path_present_in_json_when_some() {
+        let params = GenerateSubtitlesParams {
+            target_cc_path: Some("/data/videos/abc123/cc.zh.srt".to_string()),
+            ..base_params()
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(
+            json.contains("\"target_cc_path\":\"/data/videos/abc123/cc.zh.srt\""),
+            "got: {json}"
+        );
     }
 }
