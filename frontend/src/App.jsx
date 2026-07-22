@@ -13,6 +13,7 @@ import QueueList from './components/QueueList.jsx';
 import LibraryView from './components/LibraryView.jsx';
 import ConfirmDialog from './components/ConfirmDialog.jsx';
 import { getTheme } from './theme.js';
+import { isTauri, toggleWindowFullscreen } from './tauri.js';
 import {
   formatTime,
   PIPELINE_ACTIVE_STATUSES,
@@ -991,9 +992,19 @@ export default function App() {
   // Fullscreens/exits VideoStage's outer container (stageContainerRef), NOT
   // the bare <video> — see the module-level helpers above and README change
   // #4. No-ops (rather than throwing) on browsers without any Fullscreen API.
-  function toggleFullscreen() {
+  async function toggleFullscreen() {
     const el = stageContainerRef.current;
     if (!el) return;
+    // In the desktop app WKWebView ignores element-level requestFullscreen, so
+    // drive the native window instead and mirror the state ourselves (there's no
+    // `fullscreenchange` DOM event for a window toggle). The `isFullscreen` CSS
+    // makes the stage fill the now-fullscreen window. In a browser, keep the
+    // HTML5 element fullscreen path.
+    if (isTauri()) {
+      const next = await toggleWindowFullscreen();
+      if (next !== null) setIsFullscreen(next);
+      return;
+    }
     if (currentFullscreenElement()) {
       exitFullscreen();
     } else {

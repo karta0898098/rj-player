@@ -162,7 +162,13 @@ export default function VideoStage({
         // that gap split evenly instead, whether or not a sidebar is present.
         marginLeft: isFullscreen ? 0 : 'auto',
         marginRight: isFullscreen ? 0 : 'auto',
-        position: 'relative',
+        position: isFullscreen ? 'fixed' : 'relative',
+        // Fill the viewport when fullscreen. Required for the desktop app, where
+        // the OS *window* (not this element) goes fullscreen — `100%` would only
+        // fill the layout parent — so pin to the viewport instead. Harmless for
+        // the browser's element-fullscreen path, which fills the screen anyway.
+        inset: isFullscreen ? 0 : undefined,
+        zIndex: isFullscreen ? 9999 : undefined,
         borderRadius: isFullscreen ? 0 : theaterMode ? 0 : 12,
         overflow: 'hidden',
         background: '#0b0b0c',
@@ -179,9 +185,9 @@ export default function VideoStage({
         // before when that's the binding constraint, or centering a
         // shrunk box when the height budget is tighter.
         width: isFullscreen
-          ? '100%'
+          ? '100vw'
           : `min(${theaterMode ? '100%' : 'calc(100% - 40px)'}, calc((100vh - ${chromeBudgetPx}px) * ${ratio}))`,
-        height: isFullscreen ? '100%' : undefined,
+        height: isFullscreen ? '100vh' : undefined,
         // Establishes a query container so SubtitleOverlay's font sizes (in
         // cqw/cqh) scale with THIS box's actual rendered size — the same
         // box the video letterboxes into via objectFit:contain below — so
