@@ -1001,9 +1001,15 @@ export default function App() {
     // makes the stage fill the now-fullscreen window. In a browser, keep the
     // HTML5 element fullscreen path.
     if (isTauri()) {
-      const next = await toggleWindowFullscreen();
-      if (next !== null) setIsFullscreen(next);
-      return;
+      try {
+        const next = await toggleWindowFullscreen();
+        if (next !== null) {
+          setIsFullscreen(next);
+          return;
+        }
+      } catch (err) {
+        console.error('[rj-player] native window fullscreen failed:', err);
+      }
     }
     if (currentFullscreenElement()) {
       exitFullscreen();
