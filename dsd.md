@@ -505,3 +505,206 @@ reference_lyrics(音樂,既有) ＞ 人工 CC(來源語) ＞ Whisper ASR
 | 簡中 → 繁中轉換 | 目標軌 resolver 先只認繁中/泛中；未來在 merge 前接 OpenCC，`zh-Hans` 軌才升級為可用免費譯文 |
 | 雙軌精準對齊 | v1 用時間重疊 heuristic；未來可用來源/目標 CC 的字級時間做更精細對齊，或提供手動微調 |
 | 更多來源語言（韓、其他） | profile 表加列 + 該語言讀音實作（可選）；pipeline/schema/前端渲染皆已中立化，不需再改骨架 |
+
+---
+
+## 13. 打包與首次啟動（Desktop App，呼應 spec §4.2 目標 4、§10 遷移接縫）
+
+> 章節編號說明：原口語稱「§12 打包」，但 §12 已是「多語來源與 CC」，故本章落為 **§13**。
+
+### 13.0 範圍與裁定
+
+把「開發者手動 `./dev.sh` + 系統要先裝好 Rust/Node/Python/yt-dlp/ffmpeg」的現況，收斂成**雙擊即開、缺件自檢自動補、首次精靈引導設定**的桌面 App，交付 macOS 與 Windows。核心策略是 **A 方案：安裝檔輕、Python AI 於首次啟動按需下載**（對比全凍結的 B 方案見下表）。
+
+| 議題 | 裁定 | 理由 |
+|---|---|---|
+| 桌面殼 | **Tauri v2** | §10 已為此預留接縫；用 OS WebView，殼體小；Rust 原生共用 `core/` |
+| 後端如何進殼（v1） | **axum 以背景 tokio task 跑在 `127.0.0.1:<隨機 port>`，WebView 指過去** | 完全沿用 `core/` + `http/`，**連 §10.1 的 `#[tauri::command]` 改寫都先不用做**；改寫留作日後優化 |
+| 前端如何進殼 | **axum 直接 serve `frontend/dist`** | 前端本就用相對路徑 `/api`、`/media`（見 vite proxy）；同源即可，免 CORS、免改 API base |
+| Python 帶法 | **A：bundle `uv` sidecar，首次由 Doctor 下載 standalone CPython + 裝依賴** | 個人用工具，安裝檔小、跨平台穩；torch 全凍結（B）成本高、體積 2–4GB |
+| `yt-dlp` / `ffmpeg` | **一起打包成 Tauri sidecar，不依賴系統 PATH** | 兌現「像 App 一樣直接開啟」；消滅 `dev.sh` 的兩個 PATH warning |
+| Whisper 模型 | **不進安裝檔，按需下載**（首次精靈選 size 後拉） | 權重 1–3GB，隨機器需求不同，內建浪費且僵化 |
+| API Key 儲存 | **OS 憑證庫**（mac Keychain / Windows Credential Manager），非明文 `config.toml` | packaged app 的資料夾是使用者可讀的，金鑰不落明文；注入契約不變（見 §13.6） |
+
+**A vs B（Python 帶法）對照，本章定 A、留 B 接縫（§13.9）：**
+
+| | **A. 首次下載（本章採用）** | **B. PyInstaller/Nuitka 全凍結 sidecar** |
+|---|---|---|
+| 安裝檔 | ~200–400MB（含 uv/ffmpeg/yt-dlp） | ~2–4GB（torch 全包） |
+| 首次啟動 | 需連網，Doctor 下載 + 裝依賴（有進度） | 開箱即用、免網路裝套件 |
+| build | 低、跨平台穩 | 高，torch/CTranslate2 原生 lib 常踩坑 |
+
+### 13.1 架構總覽（打包後）
+
+```
+┌─ Tauri v2 app  (mac: .app/.dmg · win: .msi/.exe) ─────────────────┐
+│  WebView ── 載入打包進 resources 的 frontend/dist                  │
+│      │  fetch('/api')  ·  <video src="/media">  ·  ws('/api/.../events')
+│      ▼  （同源指向 127.0.0.1:<port>）                              │
+│  Rust process（Tauri 主程序）                                      │
+│    └─ tokio task: axum server @127.0.0.1:<隨機 port>              │
+│         serve dist + 既有 /api /media /ws（core/ + http/ 原封不動）│
+│      │ spawn（JSON lines / stdio，§3.3 契約不變）                  │
+│      ▼                                                             │
+│  Python AI worker ← AI_PYTHON 指向「受管理 venv」的 python         │
+│                                                                    │
+│  Sidecars（打包進 app、非系統 PATH）：uv · yt-dlp · ffmpeg         │
+└────────────────────────────────────────────────────────────────────┘
+
+首次啟動：Onboarding Wizard → Doctor 下載 CPython/依賴/模型 → 存 Key → 進主畫面
+之後啟動：Doctor 輕量快檢；只有缺件/損壞才跳修復
+```
+
+為讓 axum 能同時是「web 開發用獨立 bin」與「Tauri 內嵌 server」，把 backend 抽成 **lib crate**：既有 `rj-player-backend` bin 與新的 Tauri crate 都依賴它、各自在 `main`/`setup` 呼叫同一個 `serve(addr, config)`。`core/` 完全不動，`http/` 只多暴露一個可被外部呼叫的啟動函式。
+
+### 13.2 受管理執行環境的目錄配置
+
+**關鍵限制**：mac 簽章後的 `.app` bundle 唯讀，不能往裡面寫 venv/模型。故「唯讀的隨附資產」與「可寫的受管理環境」分兩處：
+
+| 類別 | 位置 | 內容 |
+|---|---|---|
+| 唯讀（app 內 resources） | `.app/Contents/Resources`、Win 安裝目錄 | `frontend/dist`、第一方 `ai/worker.py` + `ai/pipeline/`、`requirements.txt`、sidecars（uv/yt-dlp/ffmpeg） |
+| 可寫（app data dir） | mac `~/Library/Application Support/rj-player/`、win `%APPDATA%\rj-player\` | `runtime/`（CPython + venv）、`data/`（影片庫）、`models/`（HF 快取）、`state.json`（`setup_done` 等） |
+
+**與現有 config 的接縫（全部走 env override，§8 機制不動）**：打包後的殼在 spawn 前設好這些環境變數，`config.rs` 讀到即用，Rust/Python 程式碼零改動：
+
+| env | 打包後指向 |
+|---|---|
+| `DATA_DIR` | app-data 的 `data/` |
+| `AI_WORKER` | resources 內的 `ai/worker.py`（唯讀，只被讀取 OK） |
+| `AI_PYTHON` | app-data `runtime/venv/bin/python`（mac）/ `Scripts\python.exe`（win） |
+| `YT_DLP_PATH` / `FFMPEG_PATH` | 對應 sidecar 的絕對路徑 |
+| `WHISPER_MODEL` / `WHISPER_TEMPERATURE` | 設定頁的模型參數（§13.7） |
+| `HF_HOME` | app-data `models/`（把 HuggingFace 快取收進 app data，可清理/可搬移） |
+| `LLM_PROVIDER` / `LLM_MODEL` | 設定頁 |
+| `GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | 從 keychain 讀出後注入（§13.6） |
+
+### 13.3 Doctor 自檢引擎（`GET /api/doctor`）
+
+Doctor 是常駐能力，首次精靈與設定頁共用同一份結構化結果。後端新增 `GET /api/doctor` 回一份 checklist；每項有 `status` 與可選的 `fix`（觸發修復的動作 id）。
+
+```jsonc
+// GET /api/doctor
+{
+  "ready": false,                       // 全部 required 綠燈才 true
+  "checks": [
+    { "id": "python_runtime", "label": "Python runtime", "status": "missing",
+      "required": true,  "fix": "install_runtime", "detail": "尚未下載 CPython 3.12" },
+    { "id": "ai_deps",        "label": "AI 依賴",        "status": "missing",
+      "required": true,  "fix": "install_deps" },
+    { "id": "ytdlp",          "label": "yt-dlp",          "status": "ok" },   // 內建 sidecar，恆綠
+    { "id": "ffmpeg",         "label": "ffmpeg",          "status": "ok" },
+    { "id": "whisper_model",  "label": "Whisper large-v3","status": "missing",
+      "required": true,  "fix": "download_model", "detail": "≈3GB" },
+    { "id": "llm_key",        "label": "翻譯 API Key",    "status": "absent",
+      "required": false, "fix": "open_settings",
+      "detail": "未設定；可略過，只產原文＋讀音層（§7 降級）" },
+    { "id": "disk",           "label": "磁碟空間",        "status": "ok" },
+    { "id": "network",        "label": "網路",            "status": "ok" }
+  ]
+}
+```
+
+- `status`：`ok | missing | absent | broken | checking`。`missing`（該裝沒裝）與 `absent`（可選、未提供，如 Key）語意分開，UI 顏色不同（紅 vs 灰）。
+- **每次啟動的輕量快檢**只驗「檔在不在 / venv 完不完整 / Key 讀不讀得到」，不做網路慢檢；只有出現 `missing`/`broken` 才把精靈叫回來修那一項。
+- 修復動作走既有 WS（`/api/.../events` 風格）回報進度，前端不需另設輪詢。
+
+### 13.4 自動下載 Python AI（uv 驅動）
+
+「自動下載 Python AI」= 下載三樣：**① CPython runtime ② `requirements.txt` 的第三方依賴 ③ Whisper 模型**（第一方 `worker.py`/`pipeline/` 隨 app 打包、不下載）。全交給打包進去的 `uv` sidecar：
+
+```
+fix=install_runtime : uv python install 3.12            → 抓對應 OS/arch 的 standalone CPython 到 runtime/
+fix=install_deps    : uv venv runtime/venv              → 建 venv（AI_PYTHON 指這）
+                      uv pip install -r requirements.txt → 下載並裝所有 wheel（pin 版本）
+fix=download_model  : 依 WHISPER_MODEL 觸發 faster-whisper 首次載入 → 拉權重到 HF_HOME
+```
+
+用 `uv` 而非手刻 `python-build-standalone`+`pip`：單一 static binary、跨 mac/win、內建 Python 下載器與極快 wheel 快取，斷網有本地快取。**必須誠實面對的點（全部在 Doctor/精靈裡處理，不可靜默）**：
+
+- **首次必連網**：離線時 `network` 檢查轉紅，明確提示「需要一次連網下載 AI 元件」，不卡死。
+- **體積與進度**：wheel 數百 MB~2GB（torch 為大宗）、模型 1–3GB → **分項進度條 + 可重試 + 儘量斷點續傳**；某步失敗只重跑該步。
+- **完整性**：pin 死版本、驗 checksum；`uv` 的 lock 提供可重現安裝。
+- **失敗態可回復**：venv 裝到一半中斷 → 標 `broken`，修復動作先清殘留再重來（冪等）。
+
+### 13.5 首次啟動精靈（Onboarding Wizard）
+
+首次啟動（`state.json` 無 `setup_done`）走分步精靈；完成後寫 `setup_done=true`，之後不再自動彈出，改由設定頁重入任一步。
+
+```
+① 歡迎
+   「rj-player 需下載一次 AI 元件（約 X GB），過程需要網路」
+
+② 元件安裝（Doctor 自動跑，綠/紅/灰清單，逐項可重試）
+   ▸ Python runtime ......... 下載中 ▓▓▓▓░░ 42%
+   ▸ AI 依賴 (faster-whisper…) 等待中
+   ▸ yt-dlp / ffmpeg ........ ✓ 已內建
+   ▸ 磁碟 / 網路 ............ ✓
+
+③ 選擇本地模型（§13.7 的子集）
+   Whisper size: [ large-v3 ▾ ]（顯示體積/速度：large-v3 ≈3GB，準但慢）
+   Compute type: [ int8 ▾ ]（CPU 建議 int8）
+   → [下載模型]
+
+④ 設定翻譯 AI Key   ← 使用者要的那一步
+   Provider: (◉ Gemini  ○ OpenAI  ○ Anthropic)
+   API Key:  [•••••••••••••]  [測試]   ← 打一次極小驗證呼叫確認可用
+   [略過] → 只產 原文＋讀音層，譯文層標記未完成（沿用 §7 降級，非錯誤）
+
+⑤ 完成 → 進主畫面
+```
+
+- **可重入**：設定頁能重開任一步——換 model、換 provider/key、重裝依賴、清快取（Doctor 的每個 `fix` 都能單獨觸發）。
+- **精靈只是 Doctor 的首次外殼**：三者關係＝ Doctor（引擎）／精靈（首次引導）／設定頁（常駐入口）。
+
+### 13.6 API Key 管理與注入
+
+- **儲存**：精靈/設定頁把 Key 寫進 **OS 憑證庫**（Tauri keychain plugin），不寫 `config.toml`。
+- **注入**：Rust 在 spawn Python worker 前，從 keychain 讀出對應 provider 的 Key，**當環境變數注入子程序**（`GEMINI_API_KEY` 等）——這正是 config.example.toml 既述的「keys 由 backend 注入 worker 環境，worker 從不自己讀 config」機制，**Python 端契約完全不動**。
+- **`config.toml` 角色降級**：packaged app 以 keychain + 設定 UI 為主；`config.toml` 仍支援（開發者/進階覆蓋），但不再是金鑰的預設落點。
+
+### 13.7 本地模型參數（設定頁）
+
+把現有藏在 `config.toml`/env 的旋鈕搬到 UI，寫回設定並經 §13.2 的 env 注入，worker 沿用（RPC 契約不變）：
+
+| 參數 | 對應既有鍵 | UI |
+|---|---|---|
+| Model size | `WHISPER_MODEL` / `[ai] whisper_model` | 下拉 `tiny/base/small/medium/large-v3`，各顯示體積・速度 |
+| Compute type | （新增傳入 worker）| `int8 / int8_float16 / float32`；CPU 預設 `int8` |
+| Device | （新增）| `cpu`（mac Apple Silicon 無 Metal 加速，見 README）；Windows 日後可加 `cuda`（§13.9） |
+| 模型快取目錄 | `HF_HOME` | 顯示位置 + 「下載/刪除模型」「清快取」 |
+| Sampling 溫度 | `WHISPER_TEMPERATURE` | 進階區，預設 0.0 |
+
+### 13.8 打包、簽章與前端接縫
+
+- **Bundler**：Tauri v2 內建——mac 出 `.app`/`.dmg`，win 出 `.msi`/`.exe`。
+- **CI**：原生依賴不可 cross-compile，**mac 在 macOS runner、win 在 Windows runner 各自 build**。
+- **簽章**：mac 需 codesign + notarize（否則 Gatekeeper 擋）；win 建議 Authenticode 簽章（否則 SmartScreen 警告）。
+- **前端**：prod 由 axum serve `dist`（同源，免 CORS）；**dev 完全不變**（`./dev.sh` + vite proxy 續用）。相對路徑 `/api`、`/media`、WS 三者在兩種模式下都成立，`<video>` Range 串流沿用既有 `ServeFile`。
+
+### 13.9 分批上（Phase 6 — 桌面打包與首次啟動）
+
+沿用 §11 格式，每個 batch 可獨立驗收；先讓 mac 能雙擊開，再補自檢/精靈，最後上 Windows 與簽章。
+
+| Batch | 範圍 | 依賴 | 驗收（怎麼證明） |
+|---|---|---|---|
+| **B6.1 backend 抽 lib + serve dist** | backend 拆成 lib crate，暴露 `serve(addr, cfg)`；axum 掛 `ServeDir(dist)`；dev 行為不變 | §11 完成 | `cargo run` 後 `curl /` 拿到前端 HTML，`/api`、`/media` 照舊 |
+| **B6.2 Tauri 殼（mac）** | Tauri v2 crate 依賴 backend lib，`setup` 內 tokio task 起 axum @127.0.0.1:隨機 port，WebView 指過去 | B6.1 | mac 雙擊 `.app` 開窗、能貼網址下載播放（Key/模型走系統既有環境暫代） |
+| **B6.3 sidecars（uv/yt-dlp/ffmpeg）** | 三個 binary 打包成 sidecar；`YT_DLP_PATH`/`FFMPEG_PATH` 指向之；`AI_WORKER`/`DATA_DIR`/`HF_HOME` 指向 resources/app-data | B6.2 | 在**未裝** yt-dlp/ffmpeg 的乾淨機器上仍能下載＋抽音 |
+| **B6.4 Doctor + 自動下載** | `GET /api/doctor`＋各 `fix` 動作（uv 下載 CPython/裝依賴/拉模型）＋ WS 進度 | B6.3 | 乾淨機器：Doctor 全紅 → 逐項修復 → 轉綠 → 能產字幕；中途斷網→重試成功 |
+| **B6.5 首次精靈 + Key(keychain)** | 分步精靈 UI；Key 存 keychain、spawn 時注入 worker env；`setup_done` 狀態；設定頁可重入 | B6.4 | 首次開啟走完精靈→設 Key「測試」通過→產出含中文層；重開不再彈精靈 |
+| **B6.6 模型參數設定頁** | §13.7 旋鈕接上 env 注入；換 model 重啟 worker 生效 | B6.5 | 設定頁切 `small`→下次生成用 small；清快取後 Doctor 標 model missing |
+| **B6.7 Windows + 簽章 + CI** | Windows build（sidecar/路徑分隔/`Scripts\python.exe`）；mac notarize、win Authenticode；兩平台 CI 產物 | B6.5 | Windows 乾淨機器雙擊安裝→走完精靈→端到端；mac 開啟無 Gatekeeper 警告 |
+
+最小可用里程碑：**B6.2**（mac 能雙擊開）、**B6.4**（乾淨機器自檢自動補到能用）、**B6.7**（Windows 也能裝）。
+
+### 13.10 開放問題 → 設計掛鉤
+
+| 開放問題 | 設計上如何不擋路 |
+|---|---|
+| torch 體積（`stable-ts` 依賴） | forced-align 若能改走 faster-whisper 後端、拿掉 torch，A 的下載量與 B 的體積都大降；`requirements.txt` 是唯一收斂點，抽換不動 pipeline（§4.3） |
+| 想要離線／免下載安裝檔 | 即 B 方案；接縫已留：把 uv 的 wheel 快取與 standalone CPython 預先 bundle 進 resources，Doctor 改「就地安裝」而非「下載」，UI 契約不變 |
+| App 自動更新 | Tauri updater plugin；後端/前端/worker 版本各自帶版號，Doctor 檢查相容性 |
+| Windows GPU（CUDA）加速 | Device 選項預留 `cuda`；`requirements.txt` 分 CPU/GPU 兩套 extra，Doctor 依機器能力挑 |
+| 與使用者既有 `~/.cache/huggingface` 共用 | `HF_HOME` 預設收進 app-data 以利清理；設定頁可切回系統預設路徑共用既有權重 |
+| `#[tauri::command]` 化（§10.1） | v1 用內嵌 axum，先不做；日後要更省資源/更原生再把 `http/` 薄殼換成 command，`core/` 仍不動 |
