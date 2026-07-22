@@ -25,6 +25,13 @@ pub struct Config {
     /// Root directory for all persisted video data. Env: `DATA_DIR`. TOML:
     /// top-level `data_dir`. (default `./data`).
     pub data_dir: PathBuf,
+    /// Directory of the built frontend (`frontend/dist`), served as static
+    /// files so the backend can host the SPA in production/packaged mode
+    /// (dsd.md §13). Env: `DIST_DIR`. TOML: top-level `dist_dir`. Defaults to
+    /// `../frontend/dist` (the backend runs from `backend/`, so this is the
+    /// sibling `frontend/dist`). In dev the SPA is served by Vite instead, so
+    /// a missing directory here is harmless — the fallback just 404s.
+    pub dist_dir: PathBuf,
     /// Path/name of the `yt-dlp` binary. Env: `YT_DLP_PATH`. TOML:
     /// `[tools] yt_dlp_path`. (default `yt-dlp`).
     pub yt_dlp_path: String,
@@ -81,6 +88,7 @@ pub struct Config {
 struct FileConfig {
     port: Option<u16>,
     data_dir: Option<String>,
+    dist_dir: Option<String>,
     #[serde(default)]
     tools: FileTools,
     #[serde(default)]
@@ -130,6 +138,12 @@ impl Config {
             .or_else(|| file.as_ref().and_then(|f| f.data_dir.clone()))
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("./data"));
+
+        let dist_dir = std::env::var("DIST_DIR")
+            .ok()
+            .or_else(|| file.as_ref().and_then(|f| f.dist_dir.clone()))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("../frontend/dist"));
 
         let yt_dlp_path = std::env::var("YT_DLP_PATH")
             .ok()
@@ -196,6 +210,7 @@ impl Config {
         Self {
             port,
             data_dir,
+            dist_dir,
             yt_dlp_path,
             ffmpeg_path,
             yt_dlp_format,

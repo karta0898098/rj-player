@@ -1,15 +1,29 @@
 //! Route table (dsd.md §2, §3.1).
 
+use std::path::Path;
+
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::http::{media, subtitles, videos, ws};
 use crate::state::SharedState;
 
-pub fn build_router(state: SharedState) -> Router {
+/// Build the HTTP router. `dist_dir` is the built frontend directory served
+/// as a static-file fallback so the backend can host the SPA in
+/// production/packaged mode (dsd.md §13). Explicit `/api`, `/media` and
+/// `/health` routes always take precedence over the fallback; unmatched
+/// paths fall through to `dist`, with any non-file path resolving to
+/// `index.html` for SPA client-side routing. In dev the SPA is served by
+/// Vite instead and nothing requests `/` from the backend, so a missing
+/// `dist` directory is harmless (the fallback simply 404s).
+pub fn build_router(state: SharedState, dist_dir: &Path) -> Router {
+    let serve_dist =
+        ServeDir::new(dist_dir).not_found_service(ServeFile::new(dist_dir.join("index.html")));
+
     Router::new()
         .route("/health", get(health))
         .route(
@@ -38,6 +52,9 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/api/videos/:id/cancel", post(videos::cancel_video))
         .route("/media/:id/video", get(media::serve_video))
         .route("/media/:id/thumbnail", get(media::serve_thumbnail))
+        // Static SPA fallback (dsd.md §13): only handles paths that matched
+        // no route above, so it can't shadow the API or media endpoints.
+        .fallback_service(serve_dist)
         // Permissive CORS for local dev so the Vite dev server (a different
         // origin/port) can call the API directly without a proxy.
         .layer(CorsLayer::permissive())
