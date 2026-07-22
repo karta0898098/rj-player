@@ -119,8 +119,16 @@ export default function SidebarPanel({ theme, tabs, activeTab, onTabChange, chil
       </div>
 
       {!collapsed && (
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
-          {children}
+        // `flex: 1` fills the sidebar's remaining height, but the inner scroll
+        // body is `position: absolute; inset: 0` so its (potentially very tall)
+        // content does NOT contribute intrinsic height back up the flex chain.
+        // Without this the subtitle list's length would drive the two-column
+        // row — and therefore the whole card — taller; with it, the card is
+        // sized by the video and the list simply scrolls within this pane.
+        <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
+            {children}
+          </div>
         </div>
       )}
     </div>

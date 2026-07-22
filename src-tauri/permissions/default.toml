@@ -1,0 +1,22 @@
+# App-defined commands (not from a plugin). Tauri v2's IPC allowlist denies
+# by default: unlike the pre-2.0 model, a command being registered in
+# `invoke_handler!` does NOT make it callable from the frontend — it also
+# needs an explicit permission here, referenced by capabilities/default.json.
+# Missing this meant every one of these silently no-op'd (the frontend await
+# just... never resolved to anything visible, no thrown error surfaced
+# unless the caller explicitly checked) — discovered via "在 Finder 中顯示"
+# doing nothing when clicked (design_handoff_titlebar_settings/ follow-up).
+[[permission]]
+identifier = "allow-app-commands"
+description = "Allow rj-player's own app-defined commands (settings + Finder reveal)."
+commands.allow = [
+  "set_llm_key",
+  "clear_llm_key",
+  "llm_key_present",
+  "set_whisper_model",
+  "set_compute_type",
+  "set_whisper_temperature",
+  "get_settings",
+  "reveal_in_finder",
+  "save_text_file",
+]

@@ -10,12 +10,29 @@ body,
 
 body {
   margin: 0;
-  /* Dark fallback behind the <AmbientBackground> layer (which paints the real
-     themed aurora/Ambilight backdrop) — avoids a white flash on first paint.
-     Matches theme.js's dark ambientBase. */
-  background: #050506;
+  /* Transparent so the desktop shows through the window's rounded corners
+     (the rounded/clipped canvas is #root below). On the split web deployment
+     there's no transparent window, so this just sits behind #root's own
+     opaque dark background — no visual difference there. */
+  background: transparent;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* The app's rounded, clipped canvas. Under the transparent macOS window
+   (src-tauri/src/lib.rs `.transparent(true)`) this is what gives the window
+   its custom rounded corners, matching the design instead of the default
+   OS radius. The `transform` promotes #root to the containing block for the
+   app's `position: fixed` layers (AmbientBackground, the wizard/settings/
+   confirm backdrops, the fullscreen stage), so `overflow: hidden` actually
+   clips them to the radius rather than letting them spill to the square
+   window edges. The dark base (moved off <body>) also avoids a first-paint
+   flash. Radius matches the design's window corner (tune here if needed). */
+#root {
+  background: #050506;
+  border-radius: 18px;
+  overflow: hidden;
+  transform: translate(0);
 }
 
 /* Slow, subtle drift for the ambient aurora blobs (AmbientBackground.jsx). */

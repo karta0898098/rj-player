@@ -20,7 +20,9 @@ struct DesktopState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_dialog::init());
     if cfg!(debug_assertions) {
         builder = builder.plugin(
             tauri_plugin_log::Builder::default()
@@ -35,7 +37,9 @@ pub fn run() {
         set_whisper_model,
         set_compute_type,
         set_whisper_temperature,
-        get_settings
+        get_settings,
+        reveal_in_finder,
+        save_text_file
     ]);
 
     let app = builder
@@ -72,7 +76,7 @@ pub fn run() {
             // relative /api and /media resolve to the embedded backend with no
             // frontend change.
             let url = format!("http://127.0.0.1:{port}/");
-            WebviewWindowBuilder::new(
+            let window_builder = WebviewWindowBuilder::new(
                 &handle,
                 "main",
                 WebviewUrl::External(url.parse().expect("valid loopback url")),
@@ -80,8 +84,27 @@ pub fn run() {
             .title("rj-player")
             .inner_size(1100.0, 760.0)
             .min_inner_size(880.0, 560.0)
-            .build()
-            .expect("failed to create the main window");
+            // Always open centered on the active display, so the window can't
+            // end up off-screen / on another Space after the OS's window
+            // restoration (which happened repeatedly during dev).
+            .center();
+            // macOS: Overlay title bar (native traffic lights float over the
+            // content, title text hidden) + a transparent window so the app
+            // can draw its own rounded corners matching the design (#root in
+            // global.css is the rounded/clipped canvas; the window corners
+            // outside that radius are see-through). Transparency needs
+            // `macOSPrivateApi: true` in tauri.conf.json.
+            #[cfg(target_os = "macos")]
+            let window_builder = window_builder
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .transparent(true)
+                // Nudge the traffic lights down + right from the default
+                // corner so they sit centred-ish in the 40px title band and
+                // clear the rounded corner. Build-time only (Tauri has no
+                // runtime setter); tune these two numbers to taste.
+                .traffic_light_position(tauri::LogicalPosition::new(20.0, 20.0));
+            window_builder.build().expect("failed to create the main window");
 
             log::info!("rj-player desktop: embedded backend on {url}");
             Ok(())
@@ -429,4 +452,61 @@ fn get_settings(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
         "device": live_string("WHISPER_DEVICE", &settings, "device", "cpu"),
         "whisper_temperature": whisper_temperature,
     }))
+}
+
+/// Reveal a path in Finder (dsd.md's Global Settings "儲存位置" section —
+/// design_handoff_titlebar_settings/). Creates the directory first if it
+/// doesn't exist yet (e.g. the model cache before anything's been
+/// downloaded) so the button always does something sensible instead of
+/// erroring on a path that's merely empty rather than actually broken.
+/// macOS only for now — no Windows build/test environment yet.
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Save subtitle export text (SRT/LRC/TXT) via a native "Save as…" panel, then
+/// write it to the chosen path. The frontend's browser-style `<a download>` +
+/// Blob path silently no-ops inside WKWebView, so the desktop export routes
+/// here instead (tauri.js `saveTextFile`, App.jsx `handleExportSubtitles`).
+/// Returns the saved path, or `None` if the user cancelled the dialog.
+///
+/// The dialog plugin's `blocking_save_file` MUST run off the main thread (it
+/// dispatches the panel to the main thread and blocks the caller — calling it
+/// ON the main thread deadlocks, which is why the earlier sync version showed
+/// no panel). So this is an async command that runs the blocking call on a
+/// dedicated blocking thread via `spawn_blocking`, then awaits it.
+#[tauri::command]
+async fn save_text_file(
+    app: tauri::AppHandle,
+    filename: String,
+    contents: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let chosen = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().set_file_name(&filename).blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match chosen {
+        Some(file_path) => {
+            let path = file_path.into_path().map_err(|e| e.to_string())?;
+            std::fs::write(&path, contents).map_err(|e| e.to_string())?;
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
+        None => Ok(None),
+    }
 }

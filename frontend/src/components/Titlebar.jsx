@@ -1,15 +1,21 @@
 import { ACCENT } from '../theme.js';
 
 // Titlebar — README §版面結構 1. Video title (14px/700, ellipsized — see
-// videoTitle below), icon-first dark/light pill toggle (sun/moon glyph in
-// the knob, no text label), YouTube URL pill input (280px w/ small red
-// icon), icon-only ASR-options gear + icon-only accent submit button (no
-// "載入"/"加入佇列" text — see design handoff change #3). macOS traffic
-// lights were removed (MacTrafficLights.jsx is kept on disk, unused).
+// videoTitle below), YouTube URL pill input (280px w/ small red icon),
+// icon-only per-video options button + icon-only accent submit button (no
+// "載入"/"加入佇列" text — see design handoff change #3).
+//
+// design_handoff_titlebar_settings/: this is row 2 of the two-row desktop
+// title bar — deliberately unchanged in width/padding regardless of platform
+// (App.jsx renders a separate, platform-specific system strip ABOVE this one
+// for macOS traffic lights / Windows caption buttons; on web neither strip
+// exists and this is the only row). Dark/light mode moved out of here into
+// AppSettingsPanel's 外觀 tab. Two look-alike gear icons used to cause
+// confusion (this row's per-video options button vs. the app-wide Global
+// Settings button) — now visually distinct: the gear (⚙) is reserved for
+// Global Settings, this row's options button uses a sliders/tune glyph.
 export default function Titlebar({
   theme,
-  darkMode,
-  onToggleDark,
   videoTitle,
   urlInput,
   onUrlChange,
@@ -28,9 +34,9 @@ export default function Titlebar({
   // a "back to player" affordance in that state.
   showLibrary,
   onToggleLibrary,
-  // Persistent app-wide settings (dsd.md §13.7's settings-page entry point —
-  // distinct from the per-video ASR-options gear above, which is scoped to
-  // whatever's about to be queued). Opens AppSettingsPanel.
+  // Persistent app-wide settings entry point (外觀／語音辨識效能／儲存位置) —
+  // distinct from the per-video options button below, which is scoped to
+  // whatever's about to be queued. Opens AppSettingsPanel.
   onOpenAppSettings,
 }) {
   return (
@@ -94,13 +100,13 @@ export default function Titlebar({
         <button
           type="button"
           onClick={onOpenAppSettings}
-          title="系統設定（辨識效能、模型快取）"
+          title="全域設定（外觀、辨識效能、儲存位置）"
           style={{
             width: 32,
             height: 32,
             borderRadius: 9,
             border: 'none',
-            background: 'transparent',
+            background: theme.chipBg,
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
@@ -109,54 +115,17 @@ export default function Titlebar({
             flexShrink: 0,
           }}
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z" stroke="currentColor" strokeWidth="1.8" />
             <path
-              d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h14M22 17h0"
+              d="M19.4 13a7.97 7.97 0 000-2l2.1-1.6-2-3.5-2.5 1a8 8 0 00-1.7-1L14.9 3h-4l-.4 2.9a8 8 0 00-1.7 1l-2.5-1-2 3.5L6.4 11a8 8 0 000 2l-2.1 1.6 2 3.5 2.5-1a8 8 0 001.7 1l.4 2.9h4l.4-2.9a8 8 0 001.7-1l2.5 1 2-3.5-2.1-1.6z"
               stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
+              strokeWidth="1.6"
+              strokeLinejoin="round"
             />
-            <circle cx="16" cy="7" r="2.4" stroke="currentColor" strokeWidth="1.8" />
-            <circle cx="7" cy="12" r="2.4" stroke="currentColor" strokeWidth="1.8" />
-            <circle cx="18" cy="17" r="2.4" stroke="currentColor" strokeWidth="1.8" />
           </svg>
         </button>
       )}
-
-      <div
-        title="切換深色／淺色外觀"
-        onClick={onToggleDark}
-        style={{
-          width: 38,
-          height: 22,
-          borderRadius: 11,
-          cursor: 'pointer',
-          flexShrink: 0,
-          background: theme.toggleTrack,
-          position: 'relative',
-          transition: 'background 0.15s',
-        }}
-      >
-        <div
-          style={{
-            position: 'absolute',
-            top: 2,
-            left: darkMode ? 18 : 2,
-            width: 18,
-            height: 18,
-            borderRadius: '50%',
-            background: '#fff',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-            transition: 'left 0.15s',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: 10,
-          }}
-        >
-          {darkMode ? '🌙' : '☀'}
-        </div>
-      </div>
 
       <form
         style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, position: 'relative' }}
@@ -217,7 +186,7 @@ export default function Titlebar({
           <button
             type="button"
             onClick={onToggleOptions}
-            title="ASR／產生設定（音樂 MV、辨識模型、歌詞校正等）"
+            title="這支影片的字幕產生選項（音樂 MV、辨識模型…）"
             style={{
               width: 32,
               height: 32,
@@ -233,13 +202,15 @@ export default function Titlebar({
             }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-              <path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z" stroke="currentColor" strokeWidth="1.8" />
               <path
-                d="M19.4 13a7.97 7.97 0 000-2l2.1-1.6-2-3.5-2.5 1a8 8 0 00-1.7-1L14.9 3h-4l-.4 2.9a8 8 0 00-1.7 1l-2.5-1-2 3.5L6.4 11a8 8 0 000 2l-2.1 1.6 2 3.5 2.5-1a8 8 0 001.7 1l.4 2.9h4l.4-2.9a8 8 0 001.7-1l2.5 1 2-3.5-2.1-1.6z"
+                d="M4 7h11M19 7h1M4 12h1M9 12h11M4 17h6M14 17h6"
                 stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinejoin="round"
+                strokeWidth="1.8"
+                strokeLinecap="round"
               />
+              <circle cx="17" cy="7" r="2.1" stroke="currentColor" strokeWidth="1.8" />
+              <circle cx="6" cy="12" r="2.1" stroke="currentColor" strokeWidth="1.8" />
+              <circle cx="11" cy="17" r="2.1" stroke="currentColor" strokeWidth="1.8" />
             </svg>
           </button>
         )}

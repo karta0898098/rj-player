@@ -119,6 +119,19 @@ export async function clearCachedModels() {
   return res.json();
 }
 
+/**
+ * GET /api/doctor/storage — where downloaded videos/subtitles/thumbnails
+ * live + how much space they use (Global Settings "儲存位置" section):
+ * `{ videos_dir, videos_size_bytes }`.
+ */
+export async function getStorageInfo() {
+  const res = await fetch('/api/doctor/storage');
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
 /** GET /api/videos/:id — dsd.md §3.1. */
 export async function getVideo(id) {
   const res = await fetch(`/api/videos/${id}`);

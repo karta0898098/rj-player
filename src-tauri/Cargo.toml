@@ -23,8 +23,15 @@ tauri-build = { version = "2.6.3", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.3", features = [] }
+tauri = { version = "2.11.3", features = ["macos-private-api"] }
 tauri-plugin-log = "2"
+# Platform detection helper (kept for the deferred Windows caption-button work).
+tauri-plugin-os = "2"
+# Native "Save as…" dialog for subtitle export (SRT/LRC/TXT). The browser
+# `<a download>` + Blob path silently no-ops inside WKWebView, so on desktop
+# the export goes through a native save panel + file write instead (used from
+# the Rust side only in `save_text_file`, so no JS dialog ACL is needed).
+tauri-plugin-dialog = "2"
 # The backend library (dsd.md §13): this desktop shell is a *second* consumer
 # of the exact same server code the standalone `./dev.sh` binary uses — it does
 # not fork or reimplement anything.

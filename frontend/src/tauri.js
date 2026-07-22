@@ -102,3 +102,73 @@ export async function getSettings() {
   if (!isTauri()) return null;
   return invoke('get_settings');
 }
+
+/** Open the given path in Finder (Tauri/macOS only). No-op in a browser. */
+export async function revealInFinder(path) {
+  if (!isTauri()) return;
+  await invoke('reveal_in_finder', { path });
+}
+
+/**
+ * Save `text` to a user-chosen path via the OS "Save as…" panel (Tauri only).
+ * Returns true when handled (desktop), false in a browser so the caller can
+ * fall back to the Blob/`<a download>` path — which WKWebView silently ignores,
+ * hence this native route for subtitle export (App.jsx `handleExportSubtitles`).
+ */
+export async function saveTextFile(filename, text) {
+  if (!isTauri()) return false;
+  await invoke('save_text_file', { filename, contents: text });
+  return true;
+}
+
+// ---- Desktop title bar chrome (design_handoff_titlebar_settings/) --------
+
+let _platform = null;
+
+/**
+ * `'macos' | 'windows' | 'web'` — resolved once and cached. Drives whether
+ * App.jsx renders a platform system strip above Titlebar.jsx (and which
+ * variant): macOS gets a traffic-light-reserving strip, Windows gets custom
+ * caption buttons, web renders neither (the browser already has its own
+ * window chrome).
+ */
+export async function getPlatform() {
+  if (!isTauri()) return 'web';
+  if (_platform) return _platform;
+  const { platform } = await import('@tauri-apps/plugin-os');
+  const p = platform();
+  _platform = p === 'macos' ? 'macos' : p === 'windows' ? 'windows' : 'web';
+  return _platform;
+}
+
+/**
+ * Start an OS-level window drag (macOS/Windows desktop only; no-op in a
+ * browser). Called from the title-bar strip's `mousedown`
+ * (PlatformTitleStrip.jsx). This is the reliable way to make a custom title
+ * bar draggable under `titleBarStyle: Overlay` on macOS: the
+ * `data-tauri-drag-region` attribute alone is unreliable there (tauri-apps/
+ * tauri#9503), so we call the window's own `startDragging()` explicitly on
+ * pointer-down instead of depending on the attribute being detected.
+ */
+export async function startDragging() {
+  if (!isTauri()) return;
+  await (await currentWindow()).startDragging();
+}
+
+/** Minimize the desktop window (Tauri only — used by the Windows caption strip). */
+export async function minimizeWindow() {
+  if (!isTauri()) return;
+  await (await currentWindow()).minimize();
+}
+
+/** Toggle the desktop window's maximized state (Tauri only). */
+export async function toggleMaximizeWindow() {
+  if (!isTauri()) return;
+  await (await currentWindow()).toggleMaximize();
+}
+
+/** Close the desktop window (Tauri only). */
+export async function closeWindow() {
+  if (!isTauri()) return;
+  await (await currentWindow()).close();
+}

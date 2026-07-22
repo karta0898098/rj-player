@@ -15,12 +15,16 @@ const FULLSCREEN_CONTROLS_HIDE_DELAY_MS = 2500;
 // Titlebar (55.5) + the 12px stage top-margin + ControlBar's margin+content
 // (14+64+20=98) = 165.5, rounded up for border/line-height slop; +52 more
 // when VideoInfo's channel row is also showing (its own 14+6 padding + 32px
-// icon). OUTER_PADDING_PX is App.jsx's outer wrapper's 20px+20px centering
-// padding, kept as a separate constant since it's independent of ControlBar/
-// VideoInfo (changes only if that wrapper's own padding changes).
+// icon). OUTER_PADDING_PX is App.jsx's outer wrapper's centering padding
+// (44px top reserving the macOS title-bar band + 24px bottom = 68), kept as a
+// separate constant since it's independent of ControlBar/VideoInfo (changes
+// only if that wrapper's own padding changes). MUST stay in sync with it: if
+// it under-counts, the height budget over-estimates, the box gets clamped by
+// the card's maxHeight, its aspect-ratio breaks, and the video letterboxes
+// with black bars when the window is widened.
 const CHROME_PX = 180;
 const CHROME_WITH_CHANNEL_ROW_PX = 235;
-const OUTER_PADDING_PX = 40;
+const OUTER_PADDING_PX = 68;
 
 // 16:9 video area — README §版面結構 3. Real <video> element (per dsd.md §0.1
 // — NOT a YouTube iframe) replaces the prototype's CSS-stripe placeholder.

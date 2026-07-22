@@ -15,7 +15,7 @@ import ConfirmDialog from './components/ConfirmDialog.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import AppSettingsPanel from './components/AppSettingsPanel.jsx';
 import { getTheme } from './theme.js';
-import { isTauri, toggleWindowFullscreen } from './tauri.js';
+import { isTauri, toggleWindowFullscreen, startDragging, toggleMaximizeWindow, saveTextFile } from './tauri.js';
 import {
   formatTime,
   PIPELINE_ACTIVE_STATUSES,
@@ -70,6 +70,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(true); // dark by default
   const [theaterMode, setTheaterMode] = useState(false);
   const theme = getTheme(darkMode);
+
 
   // ---- load / download flow ------------------------------------------
   const [urlInput, setUrlInput] = useState('');
@@ -646,18 +647,33 @@ export default function App() {
   }
 
   // ---- subtitle export (P1) ---------------------------------------------
-  // Builds the chosen format client-side from the loaded cues and triggers a
-  // download (helpers in utils.js). No backend call.
-  function handleExportSubtitles(format) {
+  // Builds the chosen format client-side from the loaded cues, then saves it.
+  // On desktop (Tauri) a native "Save as…" panel is used, because the browser
+  // `<a download>` + Blob path silently no-ops inside WKWebView; on the web it
+  // falls back to that Blob download. No backend call either way.
+  async function handleExportSubtitles(format) {
     if (!cues.length) return;
     const base = safeFilename(videoTitle, videoId || 'subtitles');
+    let filename;
+    let text;
+    let mime;
     if (format === 'srt') {
-      downloadTextFile(`${base}.srt`, buildSrt(cues, { layers: ['ja', 'zh'] }), 'application/x-subrip;charset=utf-8');
+      filename = `${base}.srt`;
+      text = buildSrt(cues, { layers: ['ja', 'zh'] });
+      mime = 'application/x-subrip;charset=utf-8';
     } else if (format === 'lrc') {
-      downloadTextFile(`${base}.lrc`, buildLrc(cues, { layer: 'ja' }), 'text/plain;charset=utf-8');
+      filename = `${base}.lrc`;
+      text = buildLrc(cues, { layer: 'ja' });
+      mime = 'text/plain;charset=utf-8';
     } else if (format === 'txt') {
-      downloadTextFile(`${base}.txt`, buildBilingualTxt(cues), 'text/plain;charset=utf-8');
+      filename = `${base}.txt`;
+      text = buildBilingualTxt(cues);
+      mime = 'text/plain;charset=utf-8';
+    } else {
+      return;
     }
+    const savedNatively = await saveTextFile(filename, text);
+    if (!savedNatively) downloadTextFile(filename, text, mime);
   }
 
   // ---- regenerate subtitles ---------------------------------------------
@@ -1192,8 +1208,53 @@ export default function App() {
   return (
     <>
       <AmbientBackground theme={theme} dark={darkMode} videoSrc={videoSrc} videoRef={videoRef} />
+      {/* Desktop-only window drag strip. Under macOS `titleBarStyle: Overlay`
+          the native traffic-light buttons float over the content but the
+          window is NOT draggable on its own — a drag region is required
+          (tauri-apps/tauri#9503). The passive `data-tauri-drag-region`
+          attribute is unreliable on WKWebView (a missed drag falls through to
+          selecting text), so we drive it explicitly on mousedown:
+          left-button → startDragging(), double-click → toggleMaximize (native
+          title-bar behaviour). Both call window commands that need
+          `core:window:allow-start-dragging` / `allow-toggle-maximize` in
+          capabilities/default.json. A thin transparent bar pinned to the very
+          top; the traffic lights sit above it, the app content below. */}
+      {isTauri() && (
+        <div
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            if (e.detail === 2) toggleMaximizeWindow();
+            else startDragging();
+          }}
+          // z-index ABOVE every overlay in the app (the setup wizard is
+          // 100000) so the top edge stays draggable even while a full-screen
+          // modal is up — otherwise the window has NO grabbable title bar
+          // during first-run setup (hiddenTitle + Overlay hide the native
+          // one, and #9503 makes it non-draggable anyway). Its 40px height is
+          // the reserved title-bar band: the traffic lights sit inside it and
+          // the card below (wrapper's top padding) clears it, so app content
+          // never collides with the close/minimise/zoom buttons.
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 40, zIndex: 100001 }}
+        />
+      )}
       {showWizard && <SetupWizard onComplete={() => setShowWizard(false)} />}
-      <div style={{ position: 'relative', zIndex: 1, width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', boxSizing: 'border-box' }}>
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          width: '100%',
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          // Extra top padding reserves the title-bar band (matching the 40px
+          // drag strip) so the centred card never rides up under the macOS
+          // traffic lights. Sides/bottom stay tighter.
+          padding: '44px 20px 24px',
+          boxSizing: 'border-box',
+        }}
+      >
       <div
         style={{
           background: theme.winBg,
@@ -1214,14 +1275,12 @@ export default function App() {
           // the viewport, just less of it).
           width: theaterMode ? 'min(97vw, 2400px)' : 'min(94vw, 2000px)',
           maxWidth: '100%',
-          // Caps the window so it can never grow taller than the viewport
-          // (matches the wrapper's 20px top+bottom padding above). Without
-          // this, a long cue list just keeps growing the whole window
-          // instead of triggering SubtitleList's own overflowY:auto — its
-          // scroll container never actually overflows, so scrollIntoView
-          // falls through to scrolling the BROWSER PAGE on every active-cue
-          // change instead of scrolling internally.
-          maxHeight: 'calc(100vh - 40px)',
+          // Caps the card so it can never grow taller than the viewport
+          // (matches the wrapper's 44px top + 24px bottom padding above).
+          // Combined with the subtitle sidebar's absolutely-positioned scroll
+          // body (SidebarPanel.jsx), a long cue list scrolls inside its own
+          // pane instead of stretching the whole card.
+          maxHeight: 'calc(100vh - 68px)',
           borderRadius: 18,
           overflow: 'hidden',
           boxShadow: `0 40px 100px rgba(0,0,0,0.5), inset 0 1px 0 ${theme.winInsetHighlight}`,
@@ -1232,8 +1291,6 @@ export default function App() {
       >
         <Titlebar
           theme={theme}
-          darkMode={darkMode}
-          onToggleDark={() => setDarkMode((d) => !d)}
           videoTitle={videoTitle}
           urlInput={urlInput}
           onUrlChange={setUrlInput}
@@ -1402,6 +1459,8 @@ export default function App() {
 
       <AppSettingsPanel
         theme={theme}
+        dark={darkMode}
+        onDarkModeChange={setDarkMode}
         open={showAppSettings}
         onClose={() => setShowAppSettings(false)}
       />
