@@ -5,6 +5,8 @@
 //! - `GET    /api/doctor/models`  — cached Whisper models (dsd.md §13.7).
 //! - `DELETE /api/doctor/models`  — clear the whole model cache.
 //! - `DELETE /api/doctor/models/:model` — delete one cached model.
+//! - `GET    /api/doctor/storage` — video storage dir path + size (design_
+//!   handoff_titlebar_settings/'s Global Settings "儲存位置" section).
 //!
 //! The first-run wizard and settings page consume these. Key values are never
 //! exposed — only presence. No OS-security dependency (unlike the LLM
@@ -20,11 +22,16 @@ use axum::Json;
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use crate::core::doctor::{self, DoctorReport, ModelCacheReport};
+use crate::core::doctor::{self, DoctorReport, ModelCacheReport, StorageReport};
 use crate::state::SharedState;
 
 pub async fn get_doctor(State(state): State<SharedState>) -> Json<DoctorReport> {
     Json(doctor::run(&state.config).await)
+}
+
+/// Video storage dir path + size (Global Settings "儲存位置" section).
+pub async fn get_storage(State(state): State<SharedState>) -> Json<StorageReport> {
+    Json(doctor::storage_report(&state.config))
 }
 
 /// Start a repair action. 400 if the id is unknown, 409 if another fix is

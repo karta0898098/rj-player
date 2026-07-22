@@ -34,6 +34,7 @@ pub fn build_router(state: SharedState, dist_dir: &Path) -> Router {
             get(doctor::get_models).delete(doctor::clear_models),
         )
         .route("/api/doctor/models/:model", delete(doctor::delete_model))
+        .route("/api/doctor/storage", get(doctor::get_storage))
         .route(
             "/api/videos",
             get(videos::list_videos).post(videos::create_video),

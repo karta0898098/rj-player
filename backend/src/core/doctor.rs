@@ -217,6 +217,25 @@ pub fn list_cached_models() -> ModelCacheReport {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct StorageReport {
+    /// `config.videos_dir()` — where each downloaded video's subfolder
+    /// (video/audio/subtitles/thumbnail) lives.
+    pub videos_dir: String,
+    /// Total on-disk size of `videos_dir`, in bytes.
+    pub videos_size_bytes: u64,
+}
+
+/// Where downloaded videos/subtitles/thumbnails live + how much space they
+/// use (Global Settings' "儲存位置" section, design_handoff_titlebar_settings/).
+pub fn storage_report(config: &Config) -> StorageReport {
+    let videos_dir = config.videos_dir();
+    StorageReport {
+        videos_size_bytes: dir_size(&videos_dir),
+        videos_dir: videos_dir.display().to_string(),
+    }
+}
+
 fn scan_cached_models(hf_home: &std::path::Path) -> Vec<CachedModel> {
     let hub = hf_home.join("hub");
     let Ok(entries) = std::fs::read_dir(&hub) else {
