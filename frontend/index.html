@@ -4,14 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>YouTube 字幕播放器</title>
-    <!-- Noto Sans JP / TC for the (Phase 3) subtitle overlay; falls back to
-         system sans-serif automatically if offline, per design handoff §Design Tokens. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Noto Sans JP / TC (subtitle overlay) are now self-hosted via
+         @fontsource, imported in src/main.jsx — bundled locally so they render
+         in WebKit / the Tauri WebView and offline, with no Google Fonts CDN
+         dependency (dsd.md §13). -->
   </head>
   <body>
     <div id="root"></div>
