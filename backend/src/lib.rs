@@ -113,6 +113,7 @@ pub async fn build_app(config: &Config) -> anyhow::Result<(Router, WorkerHandle)
         event_hub,
         ytdlp: ytdlp.clone(),
         config: Arc::new(config.clone()),
+        doctor_hub: Arc::new(crate::core::doctor::DoctorHub::new()),
     });
 
     requeue_leftover_jobs(&state).await;

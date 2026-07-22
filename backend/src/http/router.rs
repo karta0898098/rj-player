@@ -27,6 +27,8 @@ pub fn build_router(state: SharedState, dist_dir: &Path) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/doctor", get(doctor::get_doctor))
+        .route("/api/doctor/fix/:id", post(doctor::post_fix))
+        .route("/api/doctor/events", get(doctor::doctor_events))
         .route(
             "/api/videos",
             get(videos::list_videos).post(videos::create_video),

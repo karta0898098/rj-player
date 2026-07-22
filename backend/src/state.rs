@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::core::doctor::DoctorHub;
 use crate::core::downloader::YtDlp;
 use crate::core::pipeline::{EventHub, JobSender};
 use crate::core::store::FsStore;
@@ -19,6 +20,9 @@ pub struct AppState {
     /// Resolved configuration, exposed so read-only handlers (e.g. the Doctor,
     /// dsd.md §13.3) can inspect the tool/runtime paths and key presence.
     pub config: Arc<Config>,
+    /// Broadcast hub for Doctor repair-action progress (dsd.md §13.4). Its
+    /// single-run guard also serialises fixes so two can't clash.
+    pub doctor_hub: Arc<DoctorHub>,
 }
 
 pub type SharedState = Arc<AppState>;
