@@ -179,12 +179,17 @@ fn model_cached(hf_home: &std::path::Path, model: &str) -> bool {
 /// Run `bin args…` and report whether it exits successfully (the tool exists and
 /// is runnable). Output is discarded.
 async fn tool_check(id: &'static str, label: &str, bin: &str, args: &[&str]) -> DoctorCheck {
-    let ok = Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .kill_on_drop(true);
+    // Bounded: a wedged binary must not hang the whole `/api/doctor` request
+    // (which would leave the wizard's checklist empty). Timeout => not runnable.
+    let ok = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.status())
         .await
+        .ok()
+        .and_then(|r| r.ok())
         .map(|s| s.success())
         .unwrap_or(false);
     DoctorCheck {

@@ -45,6 +45,7 @@ export default function SetupWizard({ onComplete }) {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [keyPresent, setKeyPresent] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   // Refs so the (once-registered) WebSocket handler reads current values.
   const stepRef = useRef(step);
@@ -65,9 +66,15 @@ export default function SetupWizard({ onComplete }) {
   }, [fixErrors]);
 
   async function refresh() {
-    const r = await getDoctor();
-    setReport(r);
-    return r;
+    try {
+      const r = await getDoctor();
+      setReport(r);
+      setLoadError(false);
+      return r;
+    } catch (err) {
+      setLoadError(true);
+      throw err;
+    }
   }
 
   function nextPendingFix(r) {
@@ -124,16 +131,10 @@ export default function SetupWizard({ onComplete }) {
       if (ev.type === 'log') {
         setLogLines((l) => ({ ...l, [ev.fix]: [...(l[ev.fix] || []), ev.line].slice(-40) }));
       } else if (ev.type === 'done') {
-        setActiveFix((cur) => (cur === ev.fix ? null : cur));
-        refresh()
-          .then((r) => {
-            // While on the install step, chain the next pending required fix.
-            if (stepRef.current === 1 && !activeFixRef.current) {
-              const next = nextPendingFix(r);
-              if (next) runFix(next.fix);
-            }
-          })
-          .catch(() => {});
+        setActiveFix(null);
+        // The install-step effect below chains the next pending fix once the
+        // refreshed report lands.
+        refresh().catch(() => {});
       } else if (ev.type === 'failed') {
         setActiveFix((cur) => (cur === ev.fix ? null : cur));
         setFixErrors((er) => ({ ...er, [ev.fix]: ev.error || '安裝失敗，請重試。' }));
@@ -148,6 +149,24 @@ export default function SetupWizard({ onComplete }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-run the next pending required fix while on the install step. Driven by
+  // an effect (not the button handler) so it ALSO fires once a slow
+  // `/api/doctor` finishes loading — otherwise clicking 開始 before the report
+  // arrived left the step stuck with nothing installing — and chains fix→fix as
+  // each completes.
+  useEffect(() => {
+    if (step !== 1 || activeFix) return;
+    const next = report.checks.find(
+      (c) =>
+        c.required &&
+        c.fix &&
+        (c.status === 'missing' || c.status === 'broken') &&
+        !fixErrors[c.fix]
+    );
+    if (next) runFix(next.fix);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, report, activeFix, fixErrors]);
 
   function derivedStatus(c) {
     if (activeFix === c.fix) return 'installing';
@@ -187,15 +206,7 @@ export default function SetupWizard({ onComplete }) {
 
   // Footer primary action per step.
   const primaries = [
-    {
-      label: '開始',
-      disabled: false,
-      action: () => {
-        setStep(1);
-        const next = nextPendingFix(report);
-        if (next && !activeFix) runFix(next.fix);
-      },
-    },
+    { label: '開始', disabled: false, action: () => setStep(1) },
     {
       label: '下一步',
       disabled: !requiredOk,
@@ -341,6 +352,53 @@ export default function SetupWizard({ onComplete }) {
             {step === 1 && (
               <>
                 <Heading title="安裝必要元件" sub="系統會自動檢查並安裝所需元件，翻譯 API Key 可以之後再設定。" />
+                {report.checks.length === 0 && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: '8px 2px',
+                      color: 'rgba(255,255,255,0.56)',
+                      fontSize: 13,
+                    }}
+                  >
+                    {loadError ? (
+                      <>
+                        <div
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            background: '#ff6b62',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span style={{ flex: 1 }}>無法連線到後端服務。</span>
+                        <button
+                          onClick={() => refresh().catch(() => {})}
+                          style={{
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: '6px 12px',
+                            borderRadius: 999,
+                            background: 'rgba(255,255,255,0.14)',
+                            color: 'rgba(255,255,255,0.94)',
+                          }}
+                        >
+                          重試
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {spinner}
+                        <span>正在檢查元件…</span>
+                      </>
+                    )}
+                  </div>
+                )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {report.checks.map((c) => {
                     const st = derivedStatus(c);
