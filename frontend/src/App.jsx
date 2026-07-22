@@ -21,6 +21,14 @@ import {
   buildGenerationSettingsPayload,
   loadPlaylist,
   savePlaylist,
+  buildSrt,
+  buildLrc,
+  buildBilingualTxt,
+  downloadTextFile,
+  safeFilename,
+  loadResumePositions,
+  saveResumePosition,
+  clearResumePosition,
 } from './utils.js';
 import {
   createVideo,
@@ -33,6 +41,7 @@ import {
   previewVideo,
   listVideos,
   cancelQueueItem,
+  patchCue,
 } from './api.js';
 
 // ---- fullscreen helpers (module-level; guard for browsers without the
@@ -74,6 +83,9 @@ export default function App() {
 
   // ---- playback ---------------------------------------------------
   const videoRef = useRef(null);
+  // Throttle resume-position writes (onTimeUpdate fires ~4/s; we only need to
+  // persist every couple of seconds). Millisecond timestamp of the last save.
+  const lastResumeSaveRef = useRef(0);
   // VideoStage's outer 16:9 container (video + SubtitleOverlay) — the
   // fullscreen target (README change #4), so the ruby subtitle overlay is
   // included in fullscreen instead of just the bare <video>.
@@ -459,6 +471,37 @@ export default function App() {
     }
   }
 
+  // ---- inline subtitle edit (P1) ----------------------------------------
+  // Persist a manual edit to one cue's ja_text/zh_text, then replace that cue
+  // in `cues` with the backend's returned (canonicalized) version so both the
+  // list and the on-video overlay refresh in place — no refetch. Editing
+  // ja_text clears its furigana/romaji server-side (they'd be stale), which
+  // the returned cue reflects.
+  async function editCue(cueId, patch) {
+    if (!videoId) return;
+    try {
+      const updated = await patchCue(videoId, cueId, patch);
+      setCues((prev) => prev.map((c) => (c.id === cueId ? updated : c)));
+    } catch (err) {
+      setSubtitleError(err.message || '字幕儲存失敗');
+    }
+  }
+
+  // ---- subtitle export (P1) ---------------------------------------------
+  // Builds the chosen format client-side from the loaded cues and triggers a
+  // download (helpers in utils.js). No backend call.
+  function handleExportSubtitles(format) {
+    if (!cues.length) return;
+    const base = safeFilename(videoTitle, videoId || 'subtitles');
+    if (format === 'srt') {
+      downloadTextFile(`${base}.srt`, buildSrt(cues, { layers: ['ja', 'zh'] }), 'application/x-subrip;charset=utf-8');
+    } else if (format === 'lrc') {
+      downloadTextFile(`${base}.lrc`, buildLrc(cues, { layer: 'ja' }), 'text/plain;charset=utf-8');
+    } else if (format === 'txt') {
+      downloadTextFile(`${base}.txt`, buildBilingualTxt(cues), 'text/plain;charset=utf-8');
+    }
+  }
+
   // ---- regenerate subtitles ---------------------------------------------
   // "重新產生字幕": re-runs the whole AI pipeline via POST
   // /api/videos/:id/pipeline {force:true} (dsd.md §3.1) and then rides the
@@ -753,6 +796,50 @@ export default function App() {
     setVolume((prev) => (prev > 0 ? 0 : lastVolumeRef.current || 70));
   }
 
+  // ---- resume position + auto-advance (P2) ------------------------------
+  // <video> timeupdate: drive the progress UI (as before) AND persist the
+  // playback position for `videoId`, throttled to ~once every 2s.
+  function handleTimeUpdate(e) {
+    const t = e.target.currentTime;
+    setCurrentTime(t);
+    const now = performance.now();
+    if (videoId && now - lastResumeSaveRef.current > 2000) {
+      lastResumeSaveRef.current = now;
+      // Don't persist a near-start/near-end position as a "resume point".
+      if (t > 5 && e.target.duration && t < e.target.duration - 10) {
+        saveResumePosition(videoId, t);
+      }
+    }
+  }
+
+  // <video> loadedmetadata/durationchange: record duration + aspect ratio
+  // (as before) AND, on the first metadata load for this src, seek back to a
+  // saved resume position if there is a meaningful one.
+  function handleLoadedMetadata(e) {
+    const v = e.target;
+    if (Number.isFinite(v.duration)) setDuration(v.duration);
+    if (v.videoWidth && v.videoHeight) {
+      setVideoAspectRatio(v.videoWidth / v.videoHeight);
+    }
+    if (videoId && v.duration) {
+      const saved = loadResumePositions()[videoId];
+      if (typeof saved === 'number' && saved > 5 && saved < v.duration - 10) {
+        v.currentTime = saved;
+        setCurrentTime(saved);
+      }
+    }
+  }
+
+  // <video> ended: the finished video no longer has a resume point, and if
+  // there's a next item in the playlist, auto-advance to it (else just stop).
+  function handleVideoEnded() {
+    setIsPlaying(false);
+    if (videoId) clearResumePosition(videoId);
+    const idx = playlistIds.indexOf(videoId);
+    const nextId = idx >= 0 && idx + 1 < playlistIds.length ? playlistIds[idx + 1] : null;
+    if (nextId) selectPlaylistItem(nextId);
+  }
+
   // Fullscreens/exits VideoStage's outer container (stageContainerRef), NOT
   // the bare <video> — see the module-level helpers above and README change
   // #4. No-ops (rather than throwing) on browsers without any Fullscreen API.
@@ -995,14 +1082,9 @@ export default function App() {
               onTogglePlay={togglePlay}
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
-              onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
-              onLoadedMetadata={(e) => {
-                if (Number.isFinite(e.target.duration)) setDuration(e.target.duration);
-                if (e.target.videoWidth && e.target.videoHeight) {
-                  setVideoAspectRatio(e.target.videoWidth / e.target.videoHeight);
-                }
-              }}
-              onEnded={() => setIsPlaying(false)}
+              onTimeUpdate={handleTimeUpdate}
+              onLoadedMetadata={handleLoadedMetadata}
+              onEnded={handleVideoEnded}
               loadStatus={loadStatus}
               downloadPct={downloadPct}
               stageLabel={stageLabel}
@@ -1047,6 +1129,8 @@ export default function App() {
                   subtitleStage={subtitleStage}
                   subtitlePct={subtitlePct}
                   onSeekToCue={seekToCue}
+                  onEditCue={editCue}
+                  onExport={handleExportSubtitles}
                 />
               ) : (
                 <PlaylistPanel

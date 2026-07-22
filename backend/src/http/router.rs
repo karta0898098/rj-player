@@ -1,6 +1,6 @@
 //! Route table (dsd.md §2, §3.1).
 
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -20,6 +20,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/api/videos/:id", get(videos::get_video))
         .route("/api/videos/:id/events", get(ws::video_events))
         .route("/api/videos/:id/subtitles", get(subtitles::get_subtitles))
+        .route(
+            "/api/videos/:id/subtitles/cues/:cue_id",
+            put(subtitles::patch_cue),
+        )
         .route(
             "/api/videos/:id/pipeline",
             post(subtitles::trigger_pipeline),

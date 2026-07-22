@@ -68,6 +68,45 @@ async fn main() -> anyhow::Result<()> {
         ytdlp: ytdlp.clone(),
     });
 
+    // Re-enqueue anything left `Queued` from a previous run (queue
+    // persistence): the in-memory job channel is lost on shutdown, so
+    // videos accepted by `POST /api/videos` but never picked up by the
+    // worker would otherwise sit stuck at `status: queued` forever. On
+    // startup we scan `meta.json` (already FIFO by `created_at`) and re-send
+    // a `Job::Download` for each -- `process_download_job` re-reads the
+    // originally-chosen `queued_options`/`is_music_video` off disk, so they
+    // resume exactly as first requested. Items caught mid-pipeline by the
+    // shutdown (a non-terminal, non-`Queued` status) are intentionally left
+    // as-is. Best-effort: a scan failure just logs and skips.
+    match state.store.list_meta().await {
+        Ok(all) => {
+            let mut requeued = 0usize;
+            for meta in all
+                .into_iter()
+                .filter(|m| m.status == core::domain::VideoStatus::Queued)
+            {
+                if state
+                    .job_tx
+                    .send(core::pipeline::Job::Download {
+                        video_id: meta.video_id.clone(),
+                        url: meta.source_url,
+                        auto_pipeline: true,
+                    })
+                    .await
+                    .is_ok()
+                {
+                    requeued += 1;
+                }
+            }
+            if requeued > 0 {
+                tracing::info!(requeued, "re-enqueued queued videos left over from a previous run");
+            }
+        }
+        Err(err) => {
+            tracing::warn!(%err, "could not scan for queued videos to re-enqueue on startup");
+        }
+    }
+
     let app = http::router::build_router(state.clone());
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), config.port);

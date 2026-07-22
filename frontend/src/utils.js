@@ -213,3 +213,127 @@ export function savePlaylist(videoIds) {
     // ignore — storage unavailable or full
   }
 }
+
+// ---- resume playback position (queue-feature add-on) ----------------------
+// Per-video "where you left off" in seconds, so reopening a video seeks back
+// there. Object map { video_id: seconds }, localStorage, same tolerant
+// pattern as loadGenerationSettings. Single-machine personal tool, so
+// localStorage (not the backend) is the right home.
+const RESUME_POSITIONS_STORAGE_KEY = 'rj-player.resumePositions';
+
+export function loadResumePositions() {
+  try {
+    const raw = localStorage.getItem(RESUME_POSITIONS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveResumePosition(videoId, seconds) {
+  try {
+    const all = loadResumePositions();
+    all[videoId] = seconds;
+    localStorage.setItem(RESUME_POSITIONS_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // ignore — storage unavailable or full
+  }
+}
+
+export function clearResumePosition(videoId) {
+  try {
+    const all = loadResumePositions();
+    if (videoId in all) {
+      delete all[videoId];
+      localStorage.setItem(RESUME_POSITIONS_STORAGE_KEY, JSON.stringify(all));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+// ---- subtitle export (SRT / LRC / bilingual TXT) --------------------------
+// `formatTime` above is only M:SS (playback UI), so these are separate,
+// export-shaped timestamp formatters taking milliseconds (the unit on every
+// cue's start_ms/end_ms).
+
+// SRT timestamp: "HH:MM:SS,mmm".
+export function msToSrtTime(ms) {
+  const clamped = Math.max(0, Math.round(ms));
+  const h = Math.floor(clamped / 3600000);
+  const m = Math.floor((clamped % 3600000) / 60000);
+  const s = Math.floor((clamped % 60000) / 1000);
+  const millis = clamped % 1000;
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${p2(h)}:${p2(m)}:${p2(s)},${String(millis).padStart(3, '0')}`;
+}
+
+// LRC timestamp: "[mm:ss.xx]" (centiseconds), the lyric-file convention.
+export function msToLrcTime(ms) {
+  const clamped = Math.max(0, Math.round(ms));
+  const m = Math.floor(clamped / 60000);
+  const s = Math.floor((clamped % 60000) / 1000);
+  const cs = Math.floor((clamped % 1000) / 10);
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${p2(m)}:${p2(s)}.${p2(cs)}`;
+}
+
+// Build an SRT string. `layers` picks which text lines each cue emits, in
+// order, e.g. ['ja'] or ['ja','zh']; a cue with no content for any requested
+// layer is still emitted with whatever it has (SRT viewers tolerate it).
+export function buildSrt(cues, { layers = ['ja', 'zh'] } = {}) {
+  return cues
+    .map((cue, i) => {
+      const lines = [];
+      for (const layer of layers) {
+        if (layer === 'ja' && cue.ja_text) lines.push(cue.ja_text);
+        else if (layer === 'zh' && cue.zh_text) lines.push(cue.zh_text);
+        else if (layer === 'romaji' && cue.romaji) lines.push(cue.romaji);
+      }
+      return `${i + 1}\n${msToSrtTime(cue.start_ms)} --> ${msToSrtTime(cue.end_ms)}\n${lines.join('\n')}\n`;
+    })
+    .join('\n');
+}
+
+// Build an LRC string (one timestamped line per cue, single layer — LRC is a
+// single-line-per-timestamp format). Default layer is 'ja' (the lyrics).
+export function buildLrc(cues, { layer = 'ja' } = {}) {
+  return cues
+    .map((cue) => {
+      const text = layer === 'zh' ? cue.zh_text : layer === 'romaji' ? cue.romaji : cue.ja_text;
+      return `[${msToLrcTime(cue.start_ms)}]${text || ''}`;
+    })
+    .join('\n');
+}
+
+// Build a plain-text bilingual transcript: each cue's ja line followed by its
+// zh line (when present), cues separated by a blank line. No timestamps.
+export function buildBilingualTxt(cues) {
+  return cues
+    .map((cue) => (cue.zh_text ? `${cue.ja_text}\n${cue.zh_text}` : cue.ja_text))
+    .join('\n\n');
+}
+
+// Trigger a browser download of `text` as `filename`. Uses a Blob + object URL
+// + a synthetic <a download> click, revoking the URL afterward. No such helper
+// existed in the app before.
+export function downloadTextFile(filename, text, mime = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Make a video title safe for use as a download filename (strip path-hostile
+// chars, collapse whitespace, cap length). Falls back to the video_id.
+export function safeFilename(title, fallback) {
+  const base = (title || fallback || 'subtitles').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim();
+  return (base || fallback || 'subtitles').slice(0, 80);
+}

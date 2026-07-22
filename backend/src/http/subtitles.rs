@@ -211,3 +211,73 @@ pub async fn trigger_retranslate(
         }),
     ))
 }
+
+/// Body of `PUT /api/videos/:id/subtitles/cues/:cue_id` — an in-place manual
+/// edit of one cue's text. Both fields optional: a field left absent is left
+/// untouched, so the frontend only sends what it edited.
+#[derive(Debug, Deserialize)]
+pub struct CuePatch {
+    /// New Japanese text. When it actually changes, the cue's now-stale
+    /// `ja_tokens` (furigana) and `romaji` are cleared -- the overlay falls
+    /// back to rendering the plain `ja_text`, so the edit shows correctly
+    /// without wrong furigana. Re-tokenizing/re-romaji-ing a single edited
+    /// line would need a new worker RPC round-trip; out of scope for a manual
+    /// text fix.
+    #[serde(default)]
+    pub ja_text: Option<String>,
+    /// New translation. An empty/whitespace-only string clears it back to
+    /// `null` (the nullable `zh_text` field), matching the "translation
+    /// missing" degrade the overlay already handles.
+    #[serde(default)]
+    pub zh_text: Option<String>,
+}
+
+/// `PUT /api/videos/:id/subtitles/cues/:cue_id` — persist a manual edit to one
+/// cue's `ja_text`/`zh_text` (no pipeline run; status stays `Ready`). Modeled
+/// on `trigger_retranslate`'s gating: `404` if the video is unknown, `400` if
+/// there's no `subtitles.json` yet, `404` if the cue id isn't in the doc.
+/// Returns the updated `Cue` so the frontend can refresh in place.
+pub async fn patch_cue(
+    State(state): State<SharedState>,
+    Path((id, cue_id)): Path<(String, u32)>,
+    Json(patch): Json<CuePatch>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Existence gate (404) -- same as the other subtitle handlers.
+    state
+        .store
+        .load_meta(&id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("no video with id {id}")))?;
+
+    let mut doc = state
+        .store
+        .load_subtitles(&id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("no subtitles.json to edit; run the pipeline first"))?;
+
+    let cue = doc
+        .cues
+        .iter_mut()
+        .find(|c| c.id == cue_id)
+        .ok_or_else(|| ApiError::not_found(format!("no cue with id {cue_id} in this video")))?;
+
+    if let Some(ja_text) = patch.ja_text {
+        if ja_text != cue.ja_text {
+            cue.ja_text = ja_text;
+            cue.ja_tokens = Vec::new();
+            cue.romaji = String::new();
+        }
+    }
+    if let Some(zh_text) = patch.zh_text {
+        cue.zh_text = if zh_text.trim().is_empty() {
+            None
+        } else {
+            Some(zh_text)
+        };
+    }
+
+    let updated = cue.clone();
+    state.store.save_subtitles(&doc).await?;
+
+    Ok(Json(updated))
+}

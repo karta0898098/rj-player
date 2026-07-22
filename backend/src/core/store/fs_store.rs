@@ -9,12 +9,25 @@
 //!   cc.srt      (optional: manual Japanese CC, when the uploader had one)
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use tokio::fs;
 
 use crate::core::domain::{SubtitleDoc, VideoMeta};
+
+/// Write `bytes` to `path` atomically: write to a sibling `*.tmp` file first,
+/// then rename over the target. `fs::rename` is atomic on the same filesystem,
+/// so a crash mid-write can never leave a half-written / truncated
+/// `meta.json` or `subtitles.json` behind (the old file stays intact until the
+/// rename lands). Matters now that in-place subtitle edits make these saves
+/// frequent and user-triggered, not just once-per-pipeline-run.
+async fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, bytes).await?;
+    fs::rename(&tmp, path).await?;
+    Ok(())
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -92,7 +105,7 @@ impl FsStore {
         self.ensure_video_dir(&meta.video_id).await?;
         let path = self.meta_path(&meta.video_id);
         let bytes = serde_json::to_vec_pretty(meta)?;
-        fs::write(&path, bytes).await?;
+        write_atomic(&path, &bytes).await?;
         Ok(())
     }
 
@@ -160,7 +173,7 @@ impl FsStore {
         self.ensure_video_dir(&doc.video_id).await?;
         let path = self.subtitles_path(&doc.video_id);
         let bytes = serde_json::to_vec_pretty(doc)?;
-        fs::write(&path, bytes).await?;
+        write_atomic(&path, &bytes).await?;
         Ok(())
     }
 }

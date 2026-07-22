@@ -11,6 +11,10 @@ import { findActiveCue, formatTime, formatPipelineStatusLabel, PIPELINE_ACTIVE_S
 // cue is active. Clicking a row seeks via onSeekToCue (wired to App.jsx,
 // which sets videoRef.current.currentTime + setCurrentTime). Requires its
 // parent to be `position: relative` -- the "回到目前播放" button anchors to it.
+//
+// Editing: double-click a cue's 日文 or 中文 line to edit it in place;
+// Enter/blur saves via onEditCue(cueId, {ja_text?|zh_text?}), Escape cancels.
+// Export: onExport(format) is called for 'srt' | 'lrc' | 'txt'.
 export default function SubtitleList({
   theme,
   cues,
@@ -20,6 +24,8 @@ export default function SubtitleList({
   subtitleStage,
   subtitlePct,
   onSeekToCue,
+  onEditCue,
+  onExport,
 }) {
   // Whether the list should keep auto-scrolling the active row into view.
   // Starts pinned (old behavior); the moment the user scrolls the list by
@@ -27,7 +33,10 @@ export default function SubtitleList({
   // every cue change — they get it back via the "回到目前播放" button or by
   // clicking a row.
   const [pinned, setPinned] = useState(true);
+  // In-place edit target: { cueId, field: 'ja'|'zh', value } or null.
+  const [edit, setEdit] = useState(null);
   const activeRowRef = useRef(null);
+  const editRef = useRef(null);
   // Guards handleScroll against reacting to our OWN scrollIntoView calls
   // (fired below) as if they were user-initiated scrolling.
   const programmaticScrollRef = useRef(false);
@@ -37,21 +46,26 @@ export default function SubtitleList({
   const activeCue = hasCues ? findActiveCue(cues, lookupMs) : null;
   const activeId = activeCue ? activeCue.id : null;
 
-  // Auto-scroll the active row into view — only while `pinned`. `block:
-  // 'nearest'` only moves the list's own scroll container (the nearest
-  // scrollable ancestor of the row), never the page itself.
+  // Auto-scroll the active row into view — only while `pinned` AND not
+  // mid-edit (so the list doesn't yank away from the textarea you're typing
+  // in). `block: 'nearest'` only moves the list's own scroll container.
   useEffect(() => {
-    if (!pinned || !activeRowRef.current) return;
+    if (!pinned || edit || !activeRowRef.current) return;
     programmaticScrollRef.current = true;
     activeRowRef.current.scrollIntoView({ block: 'nearest' });
-    // The resulting 'scroll' event fires asynchronously (next frame) — clear
-    // the guard just after so a genuine user scroll right afterwards isn't
-    // mistaken for our own.
     const t = setTimeout(() => {
       programmaticScrollRef.current = false;
     }, 100);
     return () => clearTimeout(t);
-  }, [activeId, pinned]);
+  }, [activeId, pinned, edit]);
+
+  // Focus + select the textarea when an edit starts.
+  useEffect(() => {
+    if (edit && editRef.current) {
+      editRef.current.focus();
+      editRef.current.select();
+    }
+  }, [edit]);
 
   function handleScroll() {
     if (programmaticScrollRef.current) return;
@@ -59,6 +73,7 @@ export default function SubtitleList({
   }
 
   function handleRowClick(cue) {
+    if (edit) return; // don't seek while editing
     setPinned(true);
     onSeekToCue(cue);
   }
@@ -70,8 +85,114 @@ export default function SubtitleList({
     }
   }
 
+  function startEdit(cue, field) {
+    if (!onEditCue) return;
+    setPinned(false);
+    setEdit({ cueId: cue.id, field, value: field === 'ja' ? cue.ja_text : cue.zh_text || '' });
+  }
+
+  function commitEdit() {
+    if (!edit) return;
+    const cue = cues.find((c) => c.id === edit.cueId);
+    const original = cue ? (edit.field === 'ja' ? cue.ja_text : cue.zh_text || '') : '';
+    if (edit.value !== original) {
+      const patch = edit.field === 'ja' ? { ja_text: edit.value } : { zh_text: edit.value };
+      onEditCue(edit.cueId, patch);
+    }
+    setEdit(null);
+  }
+
+  function onEditKeyDown(e) {
+    // Enter commits (Shift+Enter inserts a newline); Escape cancels.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      commitEdit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setEdit(null);
+    }
+  }
+
+  const editTextareaStyle = {
+    width: '100%',
+    boxSizing: 'border-box',
+    fontSize: 13,
+    fontFamily: 'inherit',
+    lineHeight: 1.4,
+    padding: '4px 6px',
+    borderRadius: 6,
+    border: `1px solid ${ACCENT}`,
+    background: theme.segmentBg,
+    color: theme.textPrimary,
+    resize: 'vertical',
+  };
+
+  function renderEditable(cue, field, node) {
+    const isEditing = edit && edit.cueId === cue.id && edit.field === field;
+    if (isEditing) {
+      return (
+        <textarea
+          ref={editRef}
+          rows={2}
+          value={edit.value}
+          onChange={(e) => setEdit((prev) => ({ ...prev, value: e.target.value }))}
+          onKeyDown={onEditKeyDown}
+          onBlur={commitEdit}
+          onClick={(e) => e.stopPropagation()}
+          style={editTextareaStyle}
+        />
+      );
+    }
+    return (
+      <div
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          startEdit(cue, field);
+        }}
+        title="雙擊編輯"
+      >
+        {node}
+      </div>
+    );
+  }
+
   return (
     <>
+      {hasCues && onExport && (
+        <div
+          style={{
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '6px 12px',
+            borderBottom: `1px solid ${theme.border}`,
+          }}
+        >
+          <span style={{ fontSize: 10, color: theme.textTertiary }}>匯出</span>
+          {['srt', 'lrc', 'txt'].map((fmt) => (
+            <button
+              key={fmt}
+              type="button"
+              onClick={() => onExport(fmt)}
+              style={{
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 10,
+                fontWeight: 700,
+                padding: '3px 8px',
+                borderRadius: 6,
+                background: theme.segmentBg,
+                color: theme.textSecondary,
+                textTransform: 'uppercase',
+              }}
+            >
+              {fmt}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div onScroll={handleScroll} className="subtitle-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {!hasCues ? (
           <div
@@ -87,7 +208,7 @@ export default function SubtitleList({
             <span style={{ color: theme.textTertiary, fontSize: 12, lineHeight: 1.6 }}>
               {PIPELINE_ACTIVE_STATUSES.has(subtitleStatus)
                 ? formatPipelineStatusLabel(subtitleStatus, subtitleStage, subtitlePct)
-                : '字幕會顯示在這裡（可點擊跳轉）'}
+                : '字幕會顯示在這裡（可點擊跳轉、雙擊編輯）'}
             </span>
           </div>
         ) : (
@@ -122,29 +243,64 @@ export default function SubtitleList({
                   {formatTime(cue.start_ms / 1000)}
                 </div>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div
-                    style={{
-                      color: theme.textPrimary,
-                      fontSize: 13,
-                      fontWeight: isActive ? 700 : 500,
-                      lineHeight: 1.4,
-                      wordBreak: 'break-word',
-                    }}
-                  >
-                    {cue.ja_text}
-                  </div>
-                  {cue.zh_text && (
+                  {renderEditable(
+                    cue,
+                    'ja',
                     <div
                       style={{
-                        color: theme.textSecondary,
-                        fontSize: 11,
-                        marginTop: 2,
+                        color: theme.textPrimary,
+                        fontSize: 13,
+                        fontWeight: isActive ? 700 : 500,
                         lineHeight: 1.4,
                         wordBreak: 'break-word',
                       }}
                     >
-                      {cue.zh_text}
+                      {cue.ja_text}
                     </div>
+                  )}
+                  {cue.zh_text
+                    ? renderEditable(
+                        cue,
+                        'zh',
+                        <div
+                          style={{
+                            color: theme.textSecondary,
+                            fontSize: 11,
+                            marginTop: 2,
+                            lineHeight: 1.4,
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {cue.zh_text}
+                        </div>
+                      )
+                    : onEditCue &&
+                      !(edit && edit.cueId === cue.id && edit.field === 'zh') && (
+                        <div
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            startEdit(cue, 'zh');
+                          }}
+                          title="雙擊加入翻譯"
+                          style={{ color: theme.textTertiary, fontSize: 11, marginTop: 2, fontStyle: 'italic' }}
+                        >
+                          ＋加翻譯
+                        </div>
+                      )}
+                  {/* When adding a translation to a cue that has none, the
+                      textarea is rendered here (renderEditable's editing branch
+                      only fires for the existing-zh path above). */}
+                  {edit && edit.cueId === cue.id && edit.field === 'zh' && !cue.zh_text && (
+                    <textarea
+                      ref={editRef}
+                      rows={2}
+                      value={edit.value}
+                      onChange={(e) => setEdit((prev) => ({ ...prev, value: e.target.value }))}
+                      onKeyDown={onEditKeyDown}
+                      onBlur={commitEdit}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ ...editTextareaStyle, marginTop: 2 }}
+                    />
                   )}
                 </div>
               </div>
@@ -153,7 +309,7 @@ export default function SubtitleList({
         )}
       </div>
 
-      {!pinned && hasCues && activeId != null && (
+      {!pinned && hasCues && activeId != null && !edit && (
         <button
           type="button"
           onClick={jumpToCurrent}

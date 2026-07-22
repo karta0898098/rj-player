@@ -157,3 +157,22 @@ export async function getSubtitles(id) {
   }
   return res.json();
 }
+
+/**
+ * PUT /api/videos/:id/subtitles/cues/:cueId — persist an in-place manual edit
+ * to one cue's text. `patch` is `{ ja_text?, zh_text? }`; only the field being
+ * edited is sent. Editing ja_text clears that cue's furigana/romaji
+ * server-side (they'd be stale). Returns the updated Cue so the caller can
+ * refresh in place without a full refetch.
+ */
+export async function patchCue(id, cueId, patch) {
+  const res = await fetch(`/api/videos/${id}/subtitles/cues/${cueId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
