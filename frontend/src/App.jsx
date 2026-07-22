@@ -949,7 +949,12 @@ export default function App() {
     if (v.videoWidth && v.videoHeight) {
       setVideoAspectRatio(v.videoWidth / v.videoHeight);
     }
-    if (videoId && v.duration) {
+    // A playlist auto-advance starts the next track from the BEGINNING: skip
+    // the resume-restore (which fires before `canplay`, so `autoAdvanceRef` is
+    // still set here) so the next video doesn't jump to its own previously
+    // saved position. Every other load (initial load, manual playlist/library
+    // click) still resumes from where you left off.
+    if (!autoAdvanceRef.current && videoId && v.duration) {
       const saved = loadResumePositions()[videoId];
       if (typeof saved === 'number' && saved > 5 && saved < v.duration - 10) {
         v.currentTime = saved;
