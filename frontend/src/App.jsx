@@ -12,6 +12,7 @@ import AddToQueuePopover from './components/AddToQueuePopover.jsx';
 import QueueList from './components/QueueList.jsx';
 import LibraryView from './components/LibraryView.jsx';
 import ConfirmDialog from './components/ConfirmDialog.jsx';
+import SetupWizard from './components/SetupWizard.jsx';
 import { getTheme } from './theme.js';
 import { isTauri, toggleWindowFullscreen } from './tauri.js';
 import {
@@ -104,6 +105,16 @@ export default function App() {
   // fires.
   const autoAdvanceRef = useRef(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // First-run setup wizard (dsd.md §13.5) — desktop app only, until completed once.
+  const [showWizard, setShowWizard] = useState(() => {
+    try {
+      // `?setup` forces it (re-run / testing); otherwise desktop-only, once.
+      const forced = new URLSearchParams(window.location.search).has('setup');
+      return forced || (isTauri() && !localStorage.getItem('rj_setup_done'));
+    } catch {
+      return false;
+    }
+  });
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -1177,6 +1188,7 @@ export default function App() {
   return (
     <>
       <AmbientBackground theme={theme} dark={darkMode} videoSrc={videoSrc} videoRef={videoRef} />
+      {showWizard && <SetupWizard onComplete={() => setShowWizard(false)} />}
       <div style={{ position: 'relative', zIndex: 1, width: '100%', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', boxSizing: 'border-box' }}>
       <div
         style={{

@@ -7,7 +7,7 @@
 //! no Tauri-aware branch in the React code. This shell is a *second consumer*
 //! of `rj_player_backend`, never a fork.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rj_player_backend::{Config, WorkerHandle};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
@@ -31,7 +31,8 @@ pub fn run() {
     builder = builder.invoke_handler(tauri::generate_handler![
         set_llm_key,
         clear_llm_key,
-        llm_key_present
+        llm_key_present,
+        set_whisper_model
     ]);
 
     let app = builder
@@ -144,6 +145,15 @@ fn resolve_config(handle: &AppHandle) -> Config {
         let managed_python = runtime.join("venv/bin/python");
         if std::env::var_os("AI_PYTHON").is_none() && managed_python.is_file() {
             std::env::set_var("AI_PYTHON", managed_python);
+        }
+
+        // Persisted settings (dsd §13.7): the wizard's chosen Whisper model
+        // overrides the config default (an explicit env var still wins).
+        if let Some(m) = read_settings(&app_data.join("settings.json"))
+            .get("whisper_model")
+            .and_then(|v| v.as_str())
+        {
+            set_env_if_absent("WHISPER_MODEL", m);
         }
     }
 
@@ -287,4 +297,35 @@ fn clear_llm_key(provider: String) -> Result<(), String> {
 #[tauri::command]
 fn llm_key_present(provider: String) -> bool {
     keychain_get(&provider).is_some()
+}
+
+// ---- Persisted app settings (dsd.md §13.7) --------------------------------
+
+fn read_settings(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the wizard's chosen Whisper model to `<app-data>/settings.json` and
+/// reflect it in the running process's env so the Doctor's model check +
+/// `download_model` fix target it immediately (dsd.md §13.7).
+#[tauri::command]
+fn set_whisper_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+    let mut settings = read_settings(&path);
+    settings.insert(
+        "whisper_model".to_string(),
+        serde_json::Value::String(model.clone()),
+    );
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&settings).unwrap_or_default(),
+    )
+    .map_err(|e| e.to_string())?;
+    std::env::set_var("WHISPER_MODEL", &model);
+    Ok(())
 }

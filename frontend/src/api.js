@@ -67,6 +67,28 @@ export async function previewVideo(url) {
   return res.json();
 }
 
+/** GET /api/doctor — the self-check report (dsd.md §13.3): { ready, checks[] }. */
+export async function getDoctor() {
+  const res = await fetch('/api/doctor');
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
+/**
+ * POST /api/doctor/fix/:id — start a repair action (dsd.md §13.4). Returns 202
+ * on start; throws on 409 (a fix is already running) or 400 (unknown id).
+ * Progress streams over the `/api/doctor/events` WebSocket.
+ */
+export async function startDoctorFix(id) {
+  const res = await fetch(`/api/doctor/fix/${id}`, { method: 'POST' });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
 /** GET /api/videos/:id — dsd.md §3.1. */
 export async function getVideo(id) {
   const res = await fetch(`/api/videos/${id}`);

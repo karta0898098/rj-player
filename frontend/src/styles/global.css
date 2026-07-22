@@ -28,6 +28,13 @@ body {
   }
 }
 
+/* Spinner for the first-run setup wizard's install/download rows. */
+@keyframes rjSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 a {
   color: #e0453f;
 }

@@ -101,12 +101,13 @@ pub async fn run(config: &Config) -> DoctorReport {
     checks.push(tool_check("ffmpeg", "ffmpeg", &config.ffmpeg_path, &["-version"]).await);
 
     // 5. Selected Whisper model present in the HF cache?
+    let whisper_model = current_whisper_model(config);
     let model_ok = hf_home
         .as_ref()
-        .is_some_and(|h| model_cached(h, &config.whisper_model));
+        .is_some_and(|h| model_cached(h, &whisper_model));
     checks.push(DoctorCheck {
         id: "whisper_model",
-        label: format!("Whisper 模型 ({})", config.whisper_model),
+        label: format!("Whisper 模型 ({whisper_model})"),
         status: if model_ok { CheckStatus::Ok } else { CheckStatus::Missing },
         required: true,
         fix: (!model_ok).then_some("download_model"),
@@ -136,6 +137,16 @@ pub async fn run(config: &Config) -> DoctorReport {
 
 fn nonempty(opt: &Option<String>) -> bool {
     opt.as_deref().is_some_and(|s| !s.is_empty())
+}
+
+/// The Whisper model in effect: the live `WHISPER_MODEL` env (which the desktop
+/// shell updates when the user picks one in the wizard, dsd.md §13.7) wins over
+/// the config snapshot taken at startup.
+fn current_whisper_model(config: &Config) -> String {
+    std::env::var("WHISPER_MODEL")
+        .ok()
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| config.whisper_model.clone())
 }
 
 /// Whether `dir` contains any entry whose file name starts with `prefix`.
@@ -319,7 +330,7 @@ async fn fix_download_model(hub: &DoctorHub, config: &Config) -> Result<(), Stri
         "from faster_whisper import WhisperModel; \
          WhisperModel('{}', device='cpu', compute_type='int8'); \
          print('model ready')",
-        config.whisper_model
+        current_whisper_model(config)
     );
     let mut cmd = Command::new(python);
     cmd.arg("-c").arg(code);

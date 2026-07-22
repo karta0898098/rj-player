@@ -67,3 +67,15 @@ export async function llmKeyPresent(provider) {
   if (!isTauri()) return null;
   return invoke('llm_key_present', { provider });
 }
+
+// ---- Managed settings (dsd.md §13.7) --------------------------------------
+
+/**
+ * Persist the selected Whisper model (Tauri only). Writes it to the app's
+ * settings and updates the running process's env so the Doctor's model check +
+ * download target it immediately. No-op in a browser.
+ */
+export async function setWhisperModel(model) {
+  if (!isTauri()) return;
+  await invoke('set_whisper_model', { model });
+}
