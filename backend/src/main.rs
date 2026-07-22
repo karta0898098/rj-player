@@ -13,19 +13,9 @@ use rj_player_backend::{serve, Config};
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 
-    let config = Config::load();
-    tracing::info!(
-        data_dir = %config.data_dir.display(),
-        dist_dir = %config.dist_dir.display(),
-        port = config.port,
-        yt_dlp_path = %config.yt_dlp_path,
-        whisper_model = %config.whisper_model,
-        whisper_temperature = config.whisper_temperature,
-        llm_provider = ?config.llm_provider,
-        "config loaded"
-    );
-
-    serve(config).await
+    // The resolved-config summary is logged by `build_app` (shared by the
+    // standalone and embedded paths), so it isn't repeated here.
+    serve(Config::load()).await
 }
 
 fn init_tracing() {
