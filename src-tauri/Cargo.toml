@@ -29,3 +29,6 @@ tauri-plugin-log = "2"
 # of the exact same server code the standalone `./dev.sh` binary uses — it does
 # not fork or reimplement anything.
 rj-player-backend = { path = "../backend" }
+# OS keychain for the LLM API key (dsd.md §13.6): stored in the macOS Keychain,
+# never in plaintext config. `apple-native` uses the Security framework.
+keyring = { version = "3", features = ["apple-native"] }

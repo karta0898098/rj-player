@@ -28,6 +28,11 @@ pub fn run() {
                 .build(),
         );
     }
+    builder = builder.invoke_handler(tauri::generate_handler![
+        set_llm_key,
+        clear_llm_key,
+        llm_key_present
+    ]);
 
     let app = builder
         .setup(|app| {
@@ -169,6 +174,8 @@ fn resolve_config(handle: &AppHandle) -> Config {
     // common Homebrew locations so yt-dlp/ffmpeg still resolve there.
     prepend_path(&["/opt/homebrew/bin", "/usr/local/bin"]);
 
+    inject_keychain_llm_keys();
+
     Config::load()
 }
 
@@ -207,4 +214,77 @@ fn prepend_path(dirs: &[&str]) {
     if let Ok(joined) = std::env::join_paths(prefix) {
         std::env::set_var("PATH", joined);
     }
+}
+
+// ---- OS keychain for the LLM API key (dsd.md §13.6) -----------------------
+//
+// The translation key lives in the macOS Keychain, never in plaintext. It's
+// stored via the Tauri commands below (called by the wizard/settings) and
+// injected as the provider's env var at startup, so the backend and worker
+// consume it exactly as they would a config.toml key — the value just never
+// touches disk in the clear.
+
+const KEYCHAIN_SERVICE: &str = "io.github.karta0898098.rjplayer";
+
+/// (keychain provider slug, the env var the backend + worker read).
+const LLM_PROVIDERS: [(&str, &str); 3] = [
+    ("gemini", "GEMINI_API_KEY"),
+    ("openai", "OPENAI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+];
+
+fn keychain_entry(provider: &str) -> keyring::Result<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("llm_api_key:{provider}"))
+}
+
+/// The stored key for a provider, if present and non-empty.
+fn keychain_get(provider: &str) -> Option<String> {
+    keychain_entry(provider)
+        .ok()?
+        .get_password()
+        .ok()
+        .filter(|k| !k.is_empty())
+}
+
+/// Inject any keychain-stored LLM keys as their provider env vars, unless one is
+/// already set explicitly (an explicit env var wins). `Config::load` then treats
+/// them exactly like a config.toml key.
+fn inject_keychain_llm_keys() {
+    for (provider, env_key) in LLM_PROVIDERS {
+        if std::env::var_os(env_key).is_none() {
+            if let Some(key) = keychain_get(provider) {
+                std::env::set_var(env_key, key);
+            }
+        }
+    }
+}
+
+/// Store (or replace) a provider's API key in the OS keychain, and reflect it in
+/// this process's env so a freshly spawned worker picks it up without a restart.
+#[tauri::command]
+fn set_llm_key(provider: String, key: String) -> Result<(), String> {
+    let entry = keychain_entry(&provider).map_err(|e| e.to_string())?;
+    entry.set_password(&key).map_err(|e| e.to_string())?;
+    if let Some((_, env_key)) = LLM_PROVIDERS.iter().find(|(p, _)| *p == provider) {
+        std::env::set_var(env_key, &key);
+    }
+    Ok(())
+}
+
+/// Remove a provider's stored key (idempotent).
+#[tauri::command]
+fn clear_llm_key(provider: String) -> Result<(), String> {
+    if let Some((_, env_key)) = LLM_PROVIDERS.iter().find(|(p, _)| *p == provider) {
+        std::env::remove_var(env_key);
+    }
+    match keychain_entry(&provider).and_then(|e| e.delete_credential()) {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Whether a provider has a stored key (never returns the value).
+#[tauri::command]
+fn llm_key_present(provider: String) -> bool {
+    keychain_get(&provider).is_some()
 }

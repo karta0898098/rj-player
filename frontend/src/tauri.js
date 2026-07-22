@@ -40,3 +40,30 @@ export async function isWindowFullscreen() {
   if (!isTauri()) return null;
   return (await currentWindow()).isFullscreen();
 }
+
+// ---- LLM API key, stored in the OS keychain (dsd.md §13.6) ----------------
+// The key value is written to / cleared from the keychain via Tauri commands;
+// the frontend only ever learns whether a key is present, never its value.
+
+async function invoke(cmd, args) {
+  const { invoke: inv } = await import('@tauri-apps/api/core');
+  return inv(cmd, args);
+}
+
+/** Store (or replace) a provider's API key in the OS keychain (Tauri only). */
+export async function setLlmKey(provider, key) {
+  if (!isTauri()) return;
+  await invoke('set_llm_key', { provider, key });
+}
+
+/** Remove a provider's stored key (Tauri only; idempotent). */
+export async function clearLlmKey(provider) {
+  if (!isTauri()) return;
+  await invoke('clear_llm_key', { provider });
+}
+
+/** Whether a provider has a stored key. null in a browser. */
+export async function llmKeyPresent(provider) {
+  if (!isTauri()) return null;
+  return invoke('llm_key_present', { provider });
+}
