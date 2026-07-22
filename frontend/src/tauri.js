@@ -79,3 +79,26 @@ export async function setWhisperModel(model) {
   if (!isTauri()) return;
   await invoke('set_whisper_model', { model });
 }
+
+/** Persist the faster-whisper compute type (Tauri only). No-op in a browser. */
+export async function setComputeType(computeType) {
+  if (!isTauri()) return;
+  await invoke('set_compute_type', { computeType });
+}
+
+/** Persist the Whisper sampling temperature (Tauri only). No-op in a browser. */
+export async function setWhisperTemperature(temperature) {
+  if (!isTauri()) return;
+  await invoke('set_whisper_temperature', { temperature });
+}
+
+/**
+ * The settings page's current effective values — `{ whisper_model,
+ * compute_type, device, whisper_temperature }` — merging any live env
+ * override with persisted settings and built-in defaults (Tauri only).
+ * `null` in a browser.
+ */
+export async function getSettings() {
+  if (!isTauri()) return null;
+  return invoke('get_settings');
+}

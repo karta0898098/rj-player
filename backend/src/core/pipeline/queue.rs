@@ -10,6 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::config::Config;
 use crate::core::domain::{JobEvent, Stage, VideoMeta, VideoStatus};
 use crate::core::downloader::{ProgressEvent, YtDlp};
 use crate::core::pipeline::hub::EventHub;
@@ -119,11 +120,17 @@ pub async fn run_worker(
     hub: Arc<EventHub>,
     ytdlp: Arc<YtDlp>,
     rpc: Arc<RpcClient>,
-    whisper_model: String,
-    whisper_temperature: f32,
+    config: Arc<Config>,
 ) {
     tracing::info!("job queue worker started");
     while let Some(job) = rx.recv().await {
+        // Re-read live env on every job rather than closing over a value
+        // frozen at startup, so a settings-page change (dsd.md §13.7) takes
+        // effect on the very next job with no restart needed.
+        let whisper_model = config.live_whisper_model();
+        let whisper_temperature = config.live_whisper_temperature();
+        let compute_type = config.live_compute_type();
+        let device = config.live_device();
         match job {
             Job::Download {
                 video_id,
@@ -137,6 +144,8 @@ pub async fn run_worker(
                     &rpc,
                     &whisper_model,
                     whisper_temperature,
+                    &compute_type,
+                    &device,
                     video_id,
                     url,
                     auto_pipeline,
@@ -155,6 +164,8 @@ pub async fn run_worker(
                     &video_id,
                     &whisper_model,
                     whisper_temperature,
+                    &compute_type,
+                    &device,
                     force,
                     &overrides,
                 )
@@ -176,6 +187,8 @@ async fn process_download_job(
     rpc: &RpcClient,
     whisper_model: &str,
     whisper_temperature: f32,
+    compute_type: &str,
+    device: &str,
     video_id: String,
     url: String,
     auto_pipeline: bool,
@@ -349,6 +362,8 @@ async fn process_download_job(
             &video_id,
             whisper_model,
             whisper_temperature,
+            compute_type,
+            device,
             false,
             &overrides,
         )
@@ -421,7 +436,7 @@ mod tests {
         store.save_meta(&meta).await.unwrap();
 
         process_download_job(
-            &store, &hub, &ytdlp, &rpc, "small", 0.0, video_id.clone(), meta.source_url.clone(), true,
+            &store, &hub, &ytdlp, &rpc, "small", 0.0, "int8", "cpu", video_id.clone(), meta.source_url.clone(), true,
         )
         .await;
 

@@ -3,14 +3,14 @@
 dsd.md §4.1: faster-whisper transcribe(audio, language=source_lang) ->
 segments [{start, end, text}] (seconds -> convert to ms).
 
-The WhisperModel is lazy-loaded on first use and cached per model size, so
-that `ping` (and worker startup in general) stays instant -- the model is
-only pulled into memory (and, on first ever run, downloaded from
-HuggingFace, ~500MB for `small`) when a `generate_subtitles` request
-actually needs it.
+The WhisperModel is lazy-loaded on first use and cached per
+(model size, compute_type, device), so that `ping` (and worker startup in
+general) stays instant -- the model is only pulled into memory (and, on
+first ever run, downloaded from HuggingFace, ~500MB for `small`) when a
+`generate_subtitles` request actually needs it.
 
-Apple Silicon has no CUDA, so we pin device="cpu", compute_type="int8" per
-the task spec.
+`compute_type`/`device` default to "int8"/"cpu" (Apple Silicon has no CUDA);
+both are configurable via the settings page (dsd.md §13.7).
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Callable, Optional, TypedDict
 
 from . import protocol
 
-_model_cache: dict[str, object] = {}
+_model_cache: dict[tuple[str, str, str], object] = {}
 
 # Base Silero VAD knobs (see the long comment inside `transcribe` for why
 # these particular values). `transcribe`'s `vad_overrides` param merges on
@@ -38,8 +38,9 @@ class Segment(TypedDict):
     text: str
 
 
-def _get_model(model_size: str):
-    model = _model_cache.get(model_size)
+def _get_model(model_size: str, compute_type: str = "int8", device: str = "cpu"):
+    key = (model_size, compute_type, device)
+    model = _model_cache.get(key)
     if model is None:
         # Imported lazily: importing faster_whisper/ctranslate2 has a
         # non-trivial cost we don't want to pay before the first real job.
@@ -47,11 +48,11 @@ def _get_model(model_size: str):
 
         protocol.log(
             f"[asr] loading whisper model '{model_size}' "
-            f"(device=cpu, compute_type=int8); first run may download "
-            f"the model from HuggingFace..."
+            f"(device={device}, compute_type={compute_type}); first run may "
+            f"download the model from HuggingFace..."
         )
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        _model_cache[model_size] = model
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        _model_cache[key] = model
         protocol.log(f"[asr] model '{model_size}' loaded")
     return model
 
@@ -65,6 +66,8 @@ def transcribe(
     initial_prompt: Optional[str] = None,
     vad_filter: bool = True,
     vad_overrides: Optional[dict] = None,
+    compute_type: str = "int8",
+    device: str = "cpu",
 ) -> tuple[list[Segment], int]:
     """Run ASR on audio_path. Returns (segments, duration_ms).
 
@@ -89,7 +92,7 @@ def transcribe(
     non-`None`) override the corresponding default; anything omitted keeps
     the tuned default below.
     """
-    model = _get_model(model_size)
+    model = _get_model(model_size, compute_type, device)
 
     vad_parameters = dict(_DEFAULT_VAD_PARAMS)
     if vad_overrides:

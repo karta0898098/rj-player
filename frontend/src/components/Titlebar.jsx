@@ -28,6 +28,10 @@ export default function Titlebar({
   // a "back to player" affordance in that state.
   showLibrary,
   onToggleLibrary,
+  // Persistent app-wide settings (dsd.md §13.7's settings-page entry point —
+  // distinct from the per-video ASR-options gear above, which is scoped to
+  // whatever's about to be queued). Opens AppSettingsPanel.
+  onOpenAppSettings,
 }) {
   return (
     <div
@@ -83,6 +87,39 @@ export default function Titlebar({
             <rect x="14" y="15" width="7" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.9" />
           </svg>
           {showLibrary ? '播放器' : '影片庫'}
+        </button>
+      )}
+
+      {onOpenAppSettings && (
+        <button
+          type="button"
+          onClick={onOpenAppSettings}
+          title="系統設定（辨識效能、模型快取）"
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 9,
+            border: 'none',
+            background: 'transparent',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: theme.textSecondary,
+            flexShrink: 0,
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h14M22 17h0"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            />
+            <circle cx="16" cy="7" r="2.4" stroke="currentColor" strokeWidth="1.8" />
+            <circle cx="7" cy="12" r="2.4" stroke="currentColor" strokeWidth="1.8" />
+            <circle cx="18" cy="17" r="2.4" stroke="currentColor" strokeWidth="1.8" />
+          </svg>
         </button>
       )}
 

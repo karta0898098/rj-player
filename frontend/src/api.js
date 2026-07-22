@@ -89,6 +89,36 @@ export async function startDoctorFix(id) {
   return res.json();
 }
 
+/**
+ * GET /api/doctor/models — cached Whisper models under HF_HOME (dsd.md
+ * §13.7's settings-page cache section): `{ hf_home, models: [{ name,
+ * size_bytes }] }`.
+ */
+export async function getCachedModels() {
+  const res = await fetch('/api/doctor/models');
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
+/** DELETE /api/doctor/models/:model — remove one cached model. */
+export async function deleteCachedModel(model) {
+  const res = await fetch(`/api/doctor/models/${encodeURIComponent(model)}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(await parseErrorMessage(res));
+  }
+}
+
+/** DELETE /api/doctor/models — clear every cached model. */
+export async function clearCachedModels() {
+  const res = await fetch('/api/doctor/models', { method: 'DELETE' });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}
+
 /** GET /api/videos/:id — dsd.md §3.1. */
 export async function getVideo(id) {
   const res = await fetch(`/api/videos/${id}`);

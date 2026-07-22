@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -29,6 +29,11 @@ pub fn build_router(state: SharedState, dist_dir: &Path) -> Router {
         .route("/api/doctor", get(doctor::get_doctor))
         .route("/api/doctor/fix/:id", post(doctor::post_fix))
         .route("/api/doctor/events", get(doctor::doctor_events))
+        .route(
+            "/api/doctor/models",
+            get(doctor::get_models).delete(doctor::clear_models),
+        )
+        .route("/api/doctor/models/:model", delete(doctor::delete_model))
         .route(
             "/api/videos",
             get(videos::list_videos).post(videos::create_video),

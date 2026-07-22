@@ -44,9 +44,13 @@ fn status_for_stage(stage: Stage) -> VideoStatus {
 /// (dsd.md §12.2/§12.5), defaulting to `"ja"` when absent -- old
 /// `meta.json` files and any caller that never set it -- so today's
 /// Japanese-only behavior stays byte-identical. `target_lang` stays fixed
-/// to `zh-TW` per the current scope. `whisper_model`
-/// and `whisper_temperature` are the *config* defaults (`WHISPER_MODEL` /
-/// `WHISPER_TEMPERATURE`) so they can be swapped without a rebuild.
+/// to `zh-TW` per the current scope. `whisper_model`, `whisper_temperature`,
+/// `compute_type`, and `device` are the *config* defaults (`WHISPER_MODEL` /
+/// `WHISPER_TEMPERATURE` / `WHISPER_COMPUTE_TYPE` / `WHISPER_DEVICE`, dsd.md
+/// §13.7) so they can be swapped without a rebuild. `compute_type`/`device`
+/// have no per-request override today (unlike the other two) -- §13.7 scopes
+/// them as global settings-page knobs only, not something the per-video
+/// generation popover exposes.
 /// `overrides` carries any per-request generation-knob overrides from
 /// `POST /api/videos/:id/pipeline`'s JSON body — each `Some` field in it
 /// wins over the corresponding config default; every `None` field (which is
@@ -62,6 +66,8 @@ pub async fn run_pipeline(
     video_id: &str,
     whisper_model: &str,
     whisper_temperature: f32,
+    compute_type: &str,
+    device: &str,
     force: bool,
     overrides: &PipelineOverrides,
 ) {
@@ -177,6 +183,8 @@ pub async fn run_pipeline(
         source_lang: meta.source_lang.clone().unwrap_or_else(|| "ja".to_string()),
         whisper_model: effective_whisper_model,
         whisper_temperature: effective_whisper_temperature,
+        compute_type: compute_type.to_string(),
+        device: device.to_string(),
         translate: true,
         target_lang: "zh-TW".to_string(),
         initial_prompt: effective_initial_prompt,
@@ -528,7 +536,7 @@ mod tests {
 
         seed_video(&store, "abc12345678", VideoStatus::Downloaded).await;
 
-        run_pipeline(&store, &hub, &rpc, "abc12345678", "small", 0.0, false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, "abc12345678", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("abc12345678").await.unwrap().unwrap();
@@ -572,6 +580,8 @@ mod tests {
                 "slowvideo001",
                 "small",
                 0.0,
+                "int8",
+                "cpu",
                 false,
                 &PipelineOverrides::default(),
             )
@@ -701,6 +711,8 @@ mod tests {
             "ccvideo0001",
             "small",
             0.0,
+            "int8",
+            "cpu",
             false,
             &PipelineOverrides::default(),
         )
@@ -751,6 +763,8 @@ mod tests {
             "targetcc001",
             "small",
             0.0,
+            "int8",
+            "cpu",
             false,
             &PipelineOverrides::default(),
         )
@@ -792,7 +806,7 @@ mod tests {
         };
         store.save_subtitles(&doc).await.unwrap();
 
-        run_pipeline(&store, &hub, &rpc, "cachedvideo1", "small", 0.0, false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, "cachedvideo1", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("cachedvideo1").await.unwrap().unwrap();
@@ -815,7 +829,7 @@ mod tests {
         // the assertions below additionally confirm the *specific*
         // failure-isolation contract (dsd.md §7): status flips to
         // pipeline_failed with a recorded error, nothing left half-written.
-        run_pipeline(&store, &hub, &rpc, "crashvideo01", "small", 0.0, false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, "crashvideo01", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("crashvideo01").await.unwrap().unwrap();
@@ -846,7 +860,7 @@ mod tests {
         meta.status = VideoStatus::Downloaded;
         store.save_meta(&meta).await.unwrap();
 
-        run_pipeline(&store, &hub, &rpc, "noaudiovid1", "small", 0.0, false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, "noaudiovid1", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("noaudiovid1").await.unwrap().unwrap();
@@ -880,6 +894,8 @@ mod tests {
             "englishvid1",
             "small",
             0.0,
+            "int8",
+            "cpu",
             false,
             &PipelineOverrides::default(),
         )

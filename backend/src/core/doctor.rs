@@ -151,10 +151,7 @@ fn nonempty(opt: &Option<String>) -> bool {
 /// shell updates when the user picks one in the wizard, dsd.md §13.7) wins over
 /// the config snapshot taken at startup.
 fn current_whisper_model(config: &Config) -> String {
-    std::env::var("WHISPER_MODEL")
-        .ok()
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| config.whisper_model.clone())
+    config.live_whisper_model()
 }
 
 /// Whether `dir` contains any entry whose file name starts with `prefix`.
@@ -182,6 +179,118 @@ fn model_cached(hf_home: &std::path::Path, model: &str) -> bool {
             // require an actual snapshot, not just an empty dir
             && e.path().join("snapshots").is_dir()
     })
+}
+
+/// HF hub repo dir prefix for faster-whisper models (dsd.md §13.7's model
+/// cache management). Real dir names look like
+/// `models--Systran--faster-whisper-large-v3`.
+const HF_MODEL_DIR_PREFIX: &str = "models--Systran--faster-whisper-";
+
+/// One cached faster-whisper model under `HF_HOME/hub`.
+#[derive(Debug, Serialize)]
+pub struct CachedModel {
+    /// The Whisper model size/name (e.g. `large-v3`), not the full HF repo
+    /// dir name.
+    pub name: String,
+    /// Total on-disk size of this model's snapshot, in bytes.
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelCacheReport {
+    /// `HF_HOME`, or `None` if unset — nothing has ever been downloaded.
+    pub hf_home: Option<String>,
+    pub models: Vec<CachedModel>,
+}
+
+/// List every faster-whisper model currently cached under `HF_HOME/hub`
+/// (dsd.md §13.7's settings-page cache management: "顯示位置...").
+pub fn list_cached_models() -> ModelCacheReport {
+    let hf_home = std::env::var_os("HF_HOME").map(PathBuf::from);
+    let models = hf_home
+        .as_deref()
+        .map(scan_cached_models)
+        .unwrap_or_default();
+    ModelCacheReport {
+        hf_home: hf_home.map(|p| p.display().to_string()),
+        models,
+    }
+}
+
+fn scan_cached_models(hf_home: &std::path::Path) -> Vec<CachedModel> {
+    let hub = hf_home.join("hub");
+    let Ok(entries) = std::fs::read_dir(&hub) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let file_name = e.file_name().to_string_lossy().into_owned();
+            let name = file_name.strip_prefix(HF_MODEL_DIR_PREFIX)?.to_string();
+            if !e.path().join("snapshots").is_dir() {
+                return None;
+            }
+            Some(CachedModel {
+                size_bytes: dir_size(&e.path()),
+                name,
+            })
+        })
+        .collect()
+}
+
+/// Recursively sum file sizes under `path`. Best-effort: unreadable entries
+/// are just skipped rather than failing the whole size (this only feeds a
+/// UI display, not a correctness-sensitive path).
+fn dir_size(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(meta) if meta.is_dir() => dir_size(&e.path()),
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+/// Delete one cached model's directory. Returns whether it existed. `model`
+/// is a plain Whisper model size/name (e.g. `large-v3`), matched the same
+/// way [`model_cached`] does.
+pub fn delete_cached_model(model: &str) -> std::io::Result<bool> {
+    let Some(hf_home) = std::env::var_os("HF_HOME").map(PathBuf::from) else {
+        return Ok(false);
+    };
+    let dir = hf_home.join("hub").join(format!("{HF_MODEL_DIR_PREFIX}{model}"));
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(true)
+}
+
+/// Delete every cached faster-whisper model. Returns how many were removed.
+pub fn clear_model_cache() -> std::io::Result<usize> {
+    let Some(hf_home) = std::env::var_os("HF_HOME").map(PathBuf::from) else {
+        return Ok(0);
+    };
+    let hub = hf_home.join("hub");
+    let Ok(entries) = std::fs::read_dir(&hub) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(HF_MODEL_DIR_PREFIX)
+        {
+            std::fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Bounded per-attempt timeouts for `tool_check`, in seconds. Some bundled
@@ -456,4 +565,112 @@ where
             });
         }
     })
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    /// `HF_HOME` is process-wide env state; Rust runs `#[test]`s in parallel
+    /// threads by default, so every test here must hold this lock for its
+    /// full duration (mirrors `config::tests::ENV_TEST_LOCK`).
+    static HF_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        HF_HOME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct TempHfHome(PathBuf);
+    impl TempHfHome {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("rj-player-hf-home-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(dir.join("hub")).unwrap();
+            std::env::set_var("HF_HOME", &dir);
+            Self(dir)
+        }
+        fn seed_model(&self, model: &str, file_bytes: &[u8]) {
+            let snapshot = self
+                .0
+                .join("hub")
+                .join(format!("{HF_MODEL_DIR_PREFIX}{model}"))
+                .join("snapshots")
+                .join("main");
+            std::fs::create_dir_all(&snapshot).unwrap();
+            std::fs::write(snapshot.join("model.bin"), file_bytes).unwrap();
+        }
+    }
+    impl Drop for TempHfHome {
+        fn drop(&mut self) {
+            std::env::remove_var("HF_HOME");
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn list_cached_models_finds_seeded_models_with_sizes() {
+        let _lock = lock_env();
+        let home = TempHfHome::new();
+        home.seed_model("large-v3", b"0123456789");
+        home.seed_model("small", b"01234");
+
+        let mut report = list_cached_models();
+        report.models.sort_by(|a, b| a.name.cmp(&b.name));
+
+        assert_eq!(report.hf_home.as_deref(), Some(home.0.to_string_lossy().as_ref()));
+        assert_eq!(report.models.len(), 2);
+        assert_eq!(report.models[0].name, "large-v3");
+        assert_eq!(report.models[0].size_bytes, 10);
+        assert_eq!(report.models[1].name, "small");
+        assert_eq!(report.models[1].size_bytes, 5);
+    }
+
+    #[test]
+    fn list_cached_models_ignores_a_dir_with_no_snapshots() {
+        let _lock = lock_env();
+        let home = TempHfHome::new();
+        // A bare, snapshot-less dir (e.g. a half-finished/corrupt download)
+        // must not be reported as a usable cached model.
+        std::fs::create_dir_all(home.0.join("hub").join(format!("{HF_MODEL_DIR_PREFIX}broken"))).unwrap();
+
+        assert!(list_cached_models().models.is_empty());
+    }
+
+    #[test]
+    fn list_cached_models_empty_when_hf_home_unset() {
+        let _lock = lock_env();
+        std::env::remove_var("HF_HOME");
+        let report = list_cached_models();
+        assert_eq!(report.hf_home, None);
+        assert!(report.models.is_empty());
+    }
+
+    #[test]
+    fn delete_cached_model_removes_only_the_named_model() {
+        let _lock = lock_env();
+        let home = TempHfHome::new();
+        home.seed_model("large-v3", b"x");
+        home.seed_model("small", b"y");
+
+        assert!(delete_cached_model("large-v3").unwrap());
+        assert!(!model_cached(&home.0, "large-v3"));
+        assert!(model_cached(&home.0, "small"), "unrelated model must survive");
+    }
+
+    #[test]
+    fn delete_cached_model_returns_false_when_not_cached() {
+        let _lock = lock_env();
+        let _home = TempHfHome::new();
+        assert!(!delete_cached_model("does-not-exist").unwrap());
+    }
+
+    #[test]
+    fn clear_model_cache_removes_every_model_and_reports_count() {
+        let _lock = lock_env();
+        let home = TempHfHome::new();
+        home.seed_model("large-v3", b"x");
+        home.seed_model("small", b"y");
+
+        let removed = clear_model_cache().unwrap();
+        assert_eq!(removed, 2);
+        assert!(list_cached_models().models.is_empty());
+    }
 }

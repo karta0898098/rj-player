@@ -69,6 +69,8 @@ pub async fn build_app(config: &Config) -> anyhow::Result<(Router, WorkerHandle)
         uv_path = ?config.uv_path,
         whisper_model = %config.whisper_model,
         whisper_temperature = config.whisper_temperature,
+        compute_type = %config.compute_type,
+        device = %config.device,
         llm_provider = ?config.llm_provider,
         gemini_key = config.gemini_api_key.as_deref().is_some_and(|k| !k.is_empty()),
         openai_key = config.openai_api_key.as_deref().is_some_and(|k| !k.is_empty()),
@@ -93,18 +95,20 @@ pub async fn build_app(config: &Config) -> anyhow::Result<(Router, WorkerHandle)
             .with_env(config.llm_env_vars()),
     );
     let (job_tx, job_rx) = job_channel();
+    let shared_config = Arc::new(config.clone());
 
     // Single-worker job queue: exactly one background task consumes jobs
     // serially (dsd.md §8 — pipeline/download concurrency is intentionally
-    // single-worker on this local, single-user tool).
+    // single-worker on this local, single-user tool). Takes the whole
+    // `Config` (rather than frozen `whisper_model`/etc. values) so a
+    // settings-page change (dsd.md §13.7) is picked up live, job to job.
     tokio::spawn(run_worker(
         job_rx,
         store.clone(),
         event_hub.clone(),
         ytdlp.clone(),
         rpc.clone(),
-        config.whisper_model.clone(),
-        config.whisper_temperature,
+        shared_config.clone(),
     ));
 
     let state = Arc::new(AppState {
@@ -112,7 +116,7 @@ pub async fn build_app(config: &Config) -> anyhow::Result<(Router, WorkerHandle)
         job_tx,
         event_hub,
         ytdlp: ytdlp.clone(),
-        config: Arc::new(config.clone()),
+        config: shared_config,
         doctor_hub: Arc::new(crate::core::doctor::DoctorHub::new()),
     });
 

@@ -68,6 +68,15 @@ pub struct Config {
     /// `generate_subtitles` RPC params. Env: `WHISPER_TEMPERATURE`. TOML:
     /// `[ai] temperature`. (default `0.0` — deterministic decoding).
     pub whisper_temperature: f32,
+    /// faster-whisper `compute_type` (dsd.md §13.7), passed through in the
+    /// `generate_subtitles` RPC params. Env: `WHISPER_COMPUTE_TYPE`. TOML:
+    /// `[ai] compute_type`. (default `int8` — CPU-recommended).
+    pub compute_type: String,
+    /// faster-whisper `device` (dsd.md §13.7). Apple Silicon has no CUDA, so
+    /// `cpu` is the only supported value on mac today; kept configurable for
+    /// a future Windows `cuda` option. Env: `WHISPER_DEVICE`. TOML:
+    /// `[ai] device`. (default `cpu`).
+    pub device: String,
     /// Forces a translation LLM provider (`gemini`|`openai`|`anthropic`);
     /// `None` lets the AI worker auto-detect from whichever API key is
     /// present. Env: `LLM_PROVIDER`. TOML: `[llm] provider`.
@@ -114,6 +123,8 @@ struct FileAi {
     ai_dir: Option<String>,
     whisper_model: Option<String>,
     temperature: Option<f32>,
+    compute_type: Option<String>,
+    device: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -196,6 +207,14 @@ impl Config {
             .and_then(|v| v.parse::<f32>().ok())
             .or_else(|| file.as_ref().and_then(|f| f.ai.temperature))
             .unwrap_or(0.0);
+        let compute_type = std::env::var("WHISPER_COMPUTE_TYPE")
+            .ok()
+            .or_else(|| file.as_ref().and_then(|f| f.ai.compute_type.clone()))
+            .unwrap_or_else(|| "int8".to_string());
+        let device = std::env::var("WHISPER_DEVICE")
+            .ok()
+            .or_else(|| file.as_ref().and_then(|f| f.ai.device.clone()))
+            .unwrap_or_else(|| "cpu".to_string());
 
         let llm_provider = std::env::var("LLM_PROVIDER")
             .ok()
@@ -225,6 +244,8 @@ impl Config {
             uv_path,
             whisper_model,
             whisper_temperature,
+            compute_type,
+            device,
             llm_provider,
             llm_model,
             gemini_api_key,
@@ -321,6 +342,48 @@ impl Config {
         self.data_dir.join("videos")
     }
 
+    /// The Whisper model in effect right now: a live `WHISPER_MODEL` env
+    /// override (set by the desktop shell's settings commands without a
+    /// restart, dsd.md §13.7) wins over the value resolved at startup. Used
+    /// wherever a value needs to reflect a just-changed setting immediately
+    /// rather than whatever `Config::load` saw at process start — the Doctor
+    /// report and the job queue's fallback default both need this.
+    pub fn live_whisper_model(&self) -> String {
+        std::env::var("WHISPER_MODEL")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| self.whisper_model.clone())
+    }
+
+    /// Live-env-wins counterpart to `whisper_temperature` (see
+    /// [`Self::live_whisper_model`]).
+    pub fn live_whisper_temperature(&self) -> f32 {
+        std::env::var("WHISPER_TEMPERATURE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(self.whisper_temperature)
+    }
+
+    /// Live-env-wins counterpart to `compute_type` (see
+    /// [`Self::live_whisper_model`]). Unlike `whisper_model`, `compute_type`
+    /// has no per-request override at all (dsd.md §13.7 scopes it as a
+    /// global settings-page knob only) — this live read is the *only* way a
+    /// settings-page change takes effect without a full restart.
+    pub fn live_compute_type(&self) -> String {
+        std::env::var("WHISPER_COMPUTE_TYPE")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| self.compute_type.clone())
+    }
+
+    /// Live-env-wins counterpart to `device` (see [`Self::live_whisper_model`]).
+    pub fn live_device(&self) -> String {
+        std::env::var("WHISPER_DEVICE")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| self.device.clone())
+    }
+
     /// Create the data directory tree if it doesn't exist yet (boot-time init).
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.videos_dir())
@@ -347,6 +410,8 @@ mod tests {
         "RJ_CONFIG",
         "WHISPER_MODEL",
         "WHISPER_TEMPERATURE",
+        "WHISPER_COMPUTE_TYPE",
+        "WHISPER_DEVICE",
         "LLM_PROVIDER",
     ];
 
@@ -481,5 +546,41 @@ temperature = 0.4
         assert_eq!(cfg.whisper_model, "large-v3");
         assert_eq!(cfg.whisper_temperature, 0.0);
         assert_eq!(cfg.llm_provider, None);
+    }
+
+    /// dsd.md §13.7: a settings-page change writes a live env var without
+    /// restarting the process, so `live_*` must reflect it on the very next
+    /// read — unlike the plain fields, which are frozen at `Config::load`
+    /// time.
+    #[test]
+    fn live_getters_prefer_a_later_env_change_over_the_loaded_snapshot() {
+        let _lock = lock_env();
+        let _guard = EnvGuard(TEST_ENV_KEYS);
+        for key in TEST_ENV_KEYS {
+            std::env::remove_var(key);
+        }
+
+        let cfg = Config::load();
+        assert_eq!(cfg.live_whisper_model(), cfg.whisper_model);
+        assert_eq!(cfg.live_whisper_temperature(), cfg.whisper_temperature);
+        assert_eq!(cfg.live_compute_type(), cfg.compute_type);
+        assert_eq!(cfg.live_device(), cfg.device);
+
+        // Simulate a settings-page write (Tauri's `set_compute_type`/etc.
+        // just do `std::env::set_var`) happening after `cfg` was loaded.
+        std::env::set_var("WHISPER_MODEL", "small");
+        std::env::set_var("WHISPER_TEMPERATURE", "0.7");
+        std::env::set_var("WHISPER_COMPUTE_TYPE", "float32");
+        std::env::set_var("WHISPER_DEVICE", "cuda");
+
+        assert_eq!(cfg.live_whisper_model(), "small");
+        assert_eq!(cfg.live_whisper_temperature(), 0.7);
+        assert_eq!(cfg.live_compute_type(), "float32");
+        assert_eq!(cfg.live_device(), "cuda");
+
+        // The frozen fields on the same `cfg` instance must NOT have moved —
+        // that's precisely the bug `live_*` exists to work around.
+        assert_eq!(cfg.whisper_model, "large-v3");
+        assert_eq!(cfg.compute_type, "int8");
     }
 }

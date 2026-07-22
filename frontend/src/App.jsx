@@ -13,6 +13,7 @@ import QueueList from './components/QueueList.jsx';
 import LibraryView from './components/LibraryView.jsx';
 import ConfirmDialog from './components/ConfirmDialog.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
+import AppSettingsPanel from './components/AppSettingsPanel.jsx';
 import { getTheme } from './theme.js';
 import { isTauri, toggleWindowFullscreen } from './tauri.js';
 import {
@@ -214,6 +215,9 @@ export default function App() {
   // ---- settings popover ---------------------------------------------------
   const [showSettings, setShowSettings] = useState(false);
   const settingsAnchorRef = useRef(null);
+
+  // ---- persistent app settings panel (dsd.md §13.7 B6.6) ------------------
+  const [showAppSettings, setShowAppSettings] = useState(false);
 
   // ---- queue feature: add-to-queue draft + queue list --------------------
   // `queueDraft` is the per-item ASR/generation options (+ music-MV flag +
@@ -1237,6 +1241,7 @@ export default function App() {
           loading={queueSubmitting}
           showLibrary={view === 'library'}
           onToggleLibrary={() => setView((v) => (v === 'library' ? 'player' : 'library'))}
+          onOpenAppSettings={() => setShowAppSettings(true)}
           optionsAnchorRef={queueOptionsAnchorRef}
           showOptions={showQueueOptions}
           onToggleOptions={() => setShowQueueOptions((s) => !s)}
@@ -1393,6 +1398,12 @@ export default function App() {
         danger
         onConfirm={performDelete}
         onCancel={() => setConfirmDelete(null)}
+      />
+
+      <AppSettingsPanel
+        theme={theme}
+        open={showAppSettings}
+        onClose={() => setShowAppSettings(false)}
       />
 
       {notice && (

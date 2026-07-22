@@ -83,6 +83,10 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
     source_lang = params.get("source_lang", "ja")
     whisper_model = params.get("whisper_model") or os.environ.get("WHISPER_MODEL", "small")
     whisper_temperature = params.get("whisper_temperature", 0.0)
+    # dsd.md §13.7 settings-page knobs -- global only, no per-request override
+    # exists for these (unlike whisper_model/whisper_temperature above).
+    compute_type = params.get("compute_type") or os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+    device = params.get("device") or os.environ.get("WHISPER_DEVICE", "cpu")
     do_translate = bool(params.get("translate", False))
     target_lang = params.get("target_lang", "zh-TW")
     # Per-request generation-knob overrides (dsd.md's "regenerate" contract,
@@ -143,6 +147,8 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 on_progress=lambda pct: emit_fn(
                     {"id": req_id, "event": "progress", "stage": "asr", "pct": pct}
                 ),
+                compute_type=compute_type,
+                device=device,
             )
             source = "align"
         elif cc_path and os.path.exists(cc_path):
@@ -165,6 +171,8 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 initial_prompt=initial_prompt,
                 vad_filter=vad_filter,
                 vad_overrides=vad_overrides,
+                compute_type=compute_type,
+                device=device,
             )
             source = "asr"
         emit_fn({"id": req_id, "event": "stage", "stage": "asr", "status": "done"})

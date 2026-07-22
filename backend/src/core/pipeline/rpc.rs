@@ -55,6 +55,11 @@ pub struct GenerateSubtitlesParams {
     pub source_lang: String,
     pub whisper_model: String,
     pub whisper_temperature: f32,
+    /// faster-whisper `compute_type`/`device` (dsd.md §13.7) — global
+    /// settings-page knobs, not per-request overrides (unlike the two
+    /// fields above).
+    pub compute_type: String,
+    pub device: String,
     pub translate: bool,
     pub target_lang: String,
     /// Per-request Whisper `initial_prompt` override (dsd.md's per-request
@@ -633,6 +638,8 @@ mod tests {
                     source_lang: "ja".to_string(),
                     whisper_model: "small".to_string(),
                     whisper_temperature: 0.0,
+                    compute_type: "int8".to_string(),
+                    device: "cpu".to_string(),
                     translate: true,
                     target_lang: "zh-TW".to_string(),
                     initial_prompt: None,
@@ -677,6 +684,8 @@ mod tests {
                     source_lang: "ja".to_string(),
                     whisper_model: "small".to_string(),
                     whisper_temperature: 0.0,
+                    compute_type: "int8".to_string(),
+                    device: "cpu".to_string(),
                     translate: true,
                     target_lang: "zh-TW".to_string(),
                     initial_prompt: None,
@@ -725,6 +734,8 @@ mod tests {
             source_lang: "ja".to_string(),
             whisper_model: "small".to_string(),
             whisper_temperature: 0.0,
+            compute_type: "int8".to_string(),
+            device: "cpu".to_string(),
             translate: true,
             target_lang: "zh-TW".to_string(),
             initial_prompt: None,

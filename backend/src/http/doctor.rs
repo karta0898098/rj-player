@@ -1,10 +1,16 @@
 //! Doctor endpoints (dsd.md §13.3/§13.4). Thin adapters over `core::doctor`:
-//! - `GET  /api/doctor`        — the self-check report.
-//! - `POST /api/doctor/fix/:id` — start a repair action (async).
-//! - `GET  /api/doctor/events`  — WebSocket feed of repair progress.
+//! - `GET    /api/doctor`         — the self-check report.
+//! - `POST   /api/doctor/fix/:id` — start a repair action (async).
+//! - `GET    /api/doctor/events`  — WebSocket feed of repair progress.
+//! - `GET    /api/doctor/models`  — cached Whisper models (dsd.md §13.7).
+//! - `DELETE /api/doctor/models`  — clear the whole model cache.
+//! - `DELETE /api/doctor/models/:model` — delete one cached model.
 //!
 //! The first-run wizard and settings page consume these. Key values are never
-//! exposed — only presence.
+//! exposed — only presence. No OS-security dependency (unlike the LLM
+//! key/settings.json Tauri commands), so these live here rather than as
+//! Tauri-only commands — they work the same in `./dev.sh` web mode and the
+//! desktop app.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -14,7 +20,7 @@ use axum::Json;
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use crate::core::doctor::{self, DoctorReport};
+use crate::core::doctor::{self, DoctorReport, ModelCacheReport};
 use crate::state::SharedState;
 
 pub async fn get_doctor(State(state): State<SharedState>) -> Json<DoctorReport> {
@@ -39,6 +45,40 @@ pub async fn post_fix(State(state): State<SharedState>, Path(id): Path<String>) 
             Json(json!({ "error": "a fix is already running" })),
         )
             .into_response()
+    }
+}
+
+/// List cached Whisper models + `HF_HOME` (dsd.md §13.7 settings page).
+pub async fn get_models() -> Json<ModelCacheReport> {
+    Json(doctor::list_cached_models())
+}
+
+/// Delete one cached model. 404 if it wasn't cached.
+pub async fn delete_model(Path(model): Path<String>) -> Response {
+    match doctor::delete_cached_model(&model) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("model not cached: {model}") })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Clear every cached model.
+pub async fn clear_models() -> Response {
+    match doctor::clear_model_cache() {
+        Ok(removed) => (StatusCode::OK, Json(json!({ "removed": removed }))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 

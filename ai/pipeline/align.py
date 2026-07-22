@@ -19,7 +19,7 @@ from typing import Callable, Optional, TypedDict
 
 from . import protocol
 
-_model_cache: dict[str, object] = {}
+_model_cache: dict[tuple[str, str, str], object] = {}
 
 
 class Segment(TypedDict):
@@ -28,8 +28,9 @@ class Segment(TypedDict):
     text: str
 
 
-def _get_model(model_size: str):
-    model = _model_cache.get(model_size)
+def _get_model(model_size: str, compute_type: str = "int8", device: str = "cpu"):
+    key = (model_size, compute_type, device)
+    model = _model_cache.get(key)
     if model is None:
         # Imported lazily, mirroring asr.py: importing stable_whisper (and
         # transitively faster_whisper/ctranslate2) has a non-trivial cost we
@@ -38,11 +39,13 @@ def _get_model(model_size: str):
 
         protocol.log(
             f"[align] loading faster-whisper model '{model_size}' for forced "
-            f"alignment (device=cpu, compute_type=int8); first run may "
-            f"download the model from HuggingFace..."
+            f"alignment (device={device}, compute_type={compute_type}); first "
+            f"run may download the model from HuggingFace..."
         )
-        model = stable_whisper.load_faster_whisper(model_size)
-        _model_cache[model_size] = model
+        model = stable_whisper.load_faster_whisper(
+            model_size, device=device, compute_type=compute_type
+        )
+        _model_cache[key] = model
         protocol.log(f"[align] model '{model_size}' loaded")
     return model
 
@@ -71,6 +74,8 @@ def align(
     source_lang: str,
     model_size: str,
     on_progress: Optional[Callable[[int], None]] = None,
+    compute_type: str = "int8",
+    device: str = "cpu",
 ) -> tuple[list[Segment], int]:
     """Force-align `reference_text` to `audio_path`. Returns (segments, duration_ms).
 
@@ -83,7 +88,7 @@ def align(
     progress bar to the terminal during `model.align`, so there's no
     per-segment callback to hook into like `asr.transcribe` has.
     """
-    model = _get_model(model_size)
+    model = _get_model(model_size, compute_type, device)
 
     if on_progress is not None:
         on_progress(50)

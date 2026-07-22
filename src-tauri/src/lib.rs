@@ -32,7 +32,10 @@ pub fn run() {
         set_llm_key,
         clear_llm_key,
         llm_key_present,
-        set_whisper_model
+        set_whisper_model,
+        set_compute_type,
+        set_whisper_temperature,
+        get_settings
     ]);
 
     let app = builder
@@ -325,24 +328,105 @@ fn read_settings(path: &Path) -> serde_json::Map<String, serde_json::Value> {
         .unwrap_or_default()
 }
 
-/// Persist the wizard's chosen Whisper model to `<app-data>/settings.json` and
-/// reflect it in the running process's env so the Doctor's model check +
-/// `download_model` fix target it immediately (dsd.md §13.7).
-#[tauri::command]
-fn set_whisper_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+/// Persist one key into `<app-data>/settings.json` and reflect it as an env
+/// var on the current process, so the Doctor's checks + a freshly-spawned AI
+/// worker pick it up immediately (dsd.md §13.7). Shared by every `set_*`
+/// settings command below.
+fn write_setting(
+    app: &tauri::AppHandle,
+    key: &str,
+    value: serde_json::Value,
+    env_key: &str,
+    env_value: &str,
+) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let path = dir.join("settings.json");
     let mut settings = read_settings(&path);
-    settings.insert(
-        "whisper_model".to_string(),
-        serde_json::Value::String(model.clone()),
-    );
+    settings.insert(key.to_string(), value);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(
         &path,
         serde_json::to_string_pretty(&settings).unwrap_or_default(),
     )
     .map_err(|e| e.to_string())?;
-    std::env::set_var("WHISPER_MODEL", &model);
+    std::env::set_var(env_key, env_value);
     Ok(())
+}
+
+/// Persist the wizard's chosen Whisper model to `<app-data>/settings.json` and
+/// reflect it in the running process's env so the Doctor's model check +
+/// `download_model` fix target it immediately (dsd.md §13.7).
+#[tauri::command]
+fn set_whisper_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    write_setting(
+        &app,
+        "whisper_model",
+        serde_json::Value::String(model.clone()),
+        "WHISPER_MODEL",
+        &model,
+    )
+}
+
+/// Persist the chosen faster-whisper `compute_type` (dsd.md §13.7's settings
+/// page: `int8` / `int8_float16` / `float32`).
+#[tauri::command]
+fn set_compute_type(app: tauri::AppHandle, compute_type: String) -> Result<(), String> {
+    write_setting(
+        &app,
+        "compute_type",
+        serde_json::Value::String(compute_type.clone()),
+        "WHISPER_COMPUTE_TYPE",
+        &compute_type,
+    )
+}
+
+/// Persist the chosen Whisper sampling temperature (dsd.md §13.7's advanced
+/// 溫度 knob).
+#[tauri::command]
+fn set_whisper_temperature(app: tauri::AppHandle, temperature: f32) -> Result<(), String> {
+    write_setting(
+        &app,
+        "whisper_temperature",
+        serde_json::Value::from(temperature),
+        "WHISPER_TEMPERATURE",
+        &temperature.to_string(),
+    )
+}
+
+/// The settings page's current effective values (dsd.md §13.7): a live env
+/// override wins over the persisted `settings.json` value, which in turn
+/// wins over the same built-in defaults `backend/src/config.rs` uses — so
+/// the page shows the truth even if a value was changed without a restart,
+/// and something sane before `settings.json` exists at all. `device` has no
+/// setter (mac is `cpu`-only today) but is still reported for display.
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = read_settings(&dir.join("settings.json"));
+
+    fn live_string(
+        env_key: &str,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        default: &str,
+    ) -> String {
+        std::env::var(env_key)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| settings.get(key).and_then(|v| v.as_str()).map(str::to_string))
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    let whisper_temperature = std::env::var("WHISPER_TEMPERATURE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .or_else(|| settings.get("whisper_temperature").and_then(|v| v.as_f64()))
+        .unwrap_or(0.0);
+
+    Ok(serde_json::json!({
+        "whisper_model": live_string("WHISPER_MODEL", &settings, "whisper_model", "large-v3"),
+        "compute_type": live_string("WHISPER_COMPUTE_TYPE", &settings, "compute_type", "int8"),
+        "device": live_string("WHISPER_DEVICE", &settings, "device", "cpu"),
+        "whisper_temperature": whisper_temperature,
+    }))
 }
