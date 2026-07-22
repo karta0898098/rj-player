@@ -124,9 +124,27 @@ fn resolve_config(handle: &AppHandle) -> Config {
         std::env::set_var("AI_DIR", dev_path("ai"));
     }
 
-    // yt-dlp / ffmpeg live in Homebrew paths a Finder-launched app doesn't
-    // inherit on PATH. Prepend the common locations so downloads work from the
-    // bundle (the B6.2 bridge; B6.3 bundles them as sidecars).
+    // yt-dlp / ffmpeg: in a bundle the sidecars sit next to the executable
+    // (Tauri externalBin, copied without the triple suffix) — prefer those so
+    // downloading + audio extraction work with no system install (dsd.md §13,
+    // B6.3). In dev there's no sidecar next to the debug binary, so the vars
+    // stay unset and resolve from PATH (Homebrew, prepended below).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for (key, name) in [("YT_DLP_PATH", "yt-dlp"), ("FFMPEG_PATH", "ffmpeg")] {
+                if std::env::var_os(key).is_none() {
+                    let cand = dir.join(name);
+                    if cand.is_file() {
+                        std::env::set_var(key, cand);
+                    }
+                }
+            }
+        }
+    }
+
+    // Dev fallback: no bundled sidecar sits next to the debug binary, and a
+    // Finder-launched app doesn't inherit the user's shell PATH — prepend the
+    // common Homebrew locations so yt-dlp/ffmpeg still resolve there.
     prepend_path(&["/opt/homebrew/bin", "/usr/local/bin"]);
 
     Config::load()

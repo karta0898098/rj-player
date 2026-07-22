@@ -62,6 +62,8 @@ pub async fn build_app(config: &Config) -> anyhow::Result<(Router, WorkerHandle)
         port = config.port,
         data_dir = %config.data_dir.display(),
         dist_dir = %config.dist_dir.display(),
+        yt_dlp_path = %config.yt_dlp_path,
+        ffmpeg_path = %config.ffmpeg_path,
         ai_python = %config.ai_python,
         ai_worker = %config.ai_worker,
         whisper_model = %config.whisper_model,

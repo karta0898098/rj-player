@@ -1,0 +1,7 @@
+# Sidecar binaries (yt-dlp, ffmpeg) are fetched at build time by
+# fetch-sidecars.sh — they're large (~80–120MB) and platform-specific, so they
+# are NOT committed (dsd.md §13, B6.3). Keep only the fetch script + docs.
+*
+!.gitignore
+!fetch-sidecars.sh
+!README.md

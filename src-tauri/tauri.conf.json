@@ -4,7 +4,8 @@
   "identifier": "io.github.karta0898098.rjplayer",
   "build": {
     "frontendDist": "../frontend/dist",
-    "beforeBuildCommand": "npm --prefix frontend run build"
+    "beforeDevCommand": "bash src-tauri/binaries/fetch-sidecars.sh && npm --prefix frontend run build",
+    "beforeBuildCommand": "bash src-tauri/binaries/fetch-sidecars.sh && npm --prefix frontend run build"
   },
   "app": {
     "windows": [],
@@ -15,6 +16,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/yt-dlp", "binaries/ffmpeg"],
     "resources": {
       "../frontend/dist": "frontend/dist"
     },
