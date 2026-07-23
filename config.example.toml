@@ -80,6 +80,15 @@ temperature = 0.0
 # transcript is kept unchanged. Env: LYRICS_POLISH.
 # lyrics_polish = "auto"
 
+# Vocal-energy gate: on Demucs-separated runs, drop cues whose time range
+# shows no vocal energy (Whisper's hallucinated intro/interlude captions).
+#   "on"    = enabled (default)
+#   "off"   = kill switch — e.g. if a very quiet real first line gets eaten
+#   "debug" = enabled + log an energy verdict for EVERY cue (for tuning;
+#             see the [energy_gate] lines in the backend's worker stderr)
+# Env: VOCAL_ENERGY_GATE.
+# vocal_energy_gate = "on"
+
 [llm]
 # Translation provider: "gemini" | "openai" | "anthropic". Env:
 # LLM_PROVIDER. Leave unset to auto-detect from whichever *_api_key below

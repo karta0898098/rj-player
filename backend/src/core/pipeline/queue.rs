@@ -148,6 +148,7 @@ pub async fn run_worker(
         let device = config.live_device();
         let vocal_separation = config.live_vocal_separation();
         let lyrics_polish = config.live_lyrics_polish();
+        let vocal_energy_gate = config.live_vocal_energy_gate();
         match job {
             Job::Download {
                 video_id,
@@ -165,6 +166,7 @@ pub async fn run_worker(
                     &device,
                     &vocal_separation,
                     &lyrics_polish,
+                    &vocal_energy_gate,
                     video_id,
                     url,
                     auto_pipeline,
@@ -188,6 +190,7 @@ pub async fn run_worker(
                     &device,
                     &vocal_separation,
                     &lyrics_polish,
+                    &vocal_energy_gate,
                     force,
                     &overrides,
                 )
@@ -213,6 +216,7 @@ async fn process_download_job(
     device: &str,
     vocal_separation: &str,
     lyrics_polish: &str,
+    vocal_energy_gate: &str,
     video_id: String,
     url: String,
     auto_pipeline: bool,
@@ -400,6 +404,7 @@ async fn process_download_job(
             device,
             vocal_separation,
             lyrics_polish,
+            vocal_energy_gate,
             false,
             &overrides,
         )
@@ -472,7 +477,7 @@ mod tests {
         store.save_meta(&meta).await.unwrap();
 
         process_download_job(
-            &store, &hub, &ytdlp, &rpc, "small", 0.0, "int8", "cpu", "auto", "auto", video_id.clone(), meta.source_url.clone(), true,
+            &store, &hub, &ytdlp, &rpc, "small", 0.0, "int8", "cpu", "auto", "auto", "on", video_id.clone(), meta.source_url.clone(), true,
         )
         .await;
 

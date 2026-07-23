@@ -327,14 +327,22 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             # actually transcribed the separated vocals — the raw mix has
             # music energy everywhere, so there'd be no signal to gate on.
             # Runs BEFORE polish so the LLM never wastes tokens correcting
-            # hallucinated intro/interlude cues. `VOCAL_ENERGY_GATE=off` is
-            # the escape hatch.
-            if (
-                asr_audio == vocals_path
-                and raw_segments
-                and os.environ.get("VOCAL_ENERGY_GATE", "").strip().lower() != "off"
-            ):
-                raw_segments = energy_gate.filter_segments(raw_segments, vocals_path)
+            # hallucinated intro/interlude cues.
+            #
+            # Mode: "on" (default) | "off" (kill switch) | "debug" (log a
+            # verdict line for EVERY cue, for threshold tuning). The RPC
+            # param (config.toml `[ai] vocal_energy_gate`, live per job)
+            # wins; the VOCAL_ENERGY_GATE env var is the no-backend
+            # fallback for driving worker.py directly.
+            gate_mode = (
+                params.get("energy_gate")
+                or os.environ.get("VOCAL_ENERGY_GATE")
+                or "on"
+            ).strip().lower()
+            if asr_audio == vocals_path and raw_segments and gate_mode != "off":
+                raw_segments = energy_gate.filter_segments(
+                    raw_segments, vocals_path, debug=gate_mode == "debug"
+                )
             if lyrics_polish and raw_segments:
                 # LyricWhiz-style LLM correction of the free transcript
                 # (polish.py). Timing is untouched — only each line's text

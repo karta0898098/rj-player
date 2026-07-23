@@ -67,12 +67,22 @@ def _frame_rms(vocals_path: str) -> Optional[tuple["object", int]]:
     return np.sqrt((trimmed**2).mean(axis=1)), _FRAME_MS
 
 
-def filter_segments(segments: list[dict], vocals_path: str) -> list[dict]:
+def filter_segments(
+    segments: list[dict], vocals_path: str, debug: bool = False
+) -> list[dict]:
     """Return `segments` minus the ones with no vocal energy in their range.
 
     Each segment needs `start_ms`/`end_ms` (the shape asr.transcribe
     yields). On ANY problem — unreadable/odd wav, no frames, numpy missing
     — the original list is returned unchanged and a log line says so.
+
+    Logging contract (this is the tuning instrument for the gate):
+    - one summary line always: threshold + how it was derived + counts;
+    - one line per DROPPED cue always, with its measured peak — a wrongly
+      dropped real line must be visible in the logs, not silent;
+    - the closest-call KEPT cue always (lowest peak that survived), showing
+      how much margin the quietest real line had;
+    - `debug=True` (VOCAL_ENERGY_GATE=debug): one line per cue, every cue.
     """
     if not segments:
         return segments
@@ -90,6 +100,7 @@ def filter_segments(segments: list[dict], vocals_path: str) -> list[dict]:
 
         kept: list[dict] = []
         dropped: list[dict] = []
+        closest_kept: Optional[tuple[float, dict]] = None
         for seg in segments:
             lo = max(0, int(seg["start_ms"] // frame_ms))
             hi = int(-(-seg["end_ms"] // frame_ms))  # ceil division
@@ -97,18 +108,40 @@ def filter_segments(segments: list[dict], vocals_path: str) -> list[dict]:
             # A cue extending past the profile's end keeps whatever frames
             # overlap; a cue entirely past the end has no evidence either
             # way — keep it (never drop on missing data).
-            peak = float(window.max()) if len(window) else threshold
-            (kept if peak >= threshold else dropped).append(seg)
-
-        if dropped:
-            protocol.log(
-                f"[energy_gate] dropped {len(dropped)}/{len(segments)} cue(s) with no "
-                f"vocal energy (threshold={threshold:.4f}): "
-                + "; ".join(
-                    f"{d['start_ms']}-{d['end_ms']}ms {d.get('text', '')[:20]!r}"
-                    for d in dropped[:5]
+            past_end = len(window) == 0
+            peak = threshold if past_end else float(window.max())
+            keep = peak >= threshold
+            if debug:
+                protocol.log(
+                    f"[energy_gate] {'keep' if keep else 'DROP'} "
+                    f"{seg['start_ms']}-{seg['end_ms']}ms peak={peak:.4f} "
+                    f"({'past end of audio' if past_end else f'thr={threshold:.4f}'}) "
+                    f"{seg.get('text', '')[:24]!r}"
                 )
-                + ("…" if len(dropped) > 5 else "")
+            if keep:
+                kept.append(seg)
+                if not past_end and (closest_kept is None or peak < closest_kept[0]):
+                    closest_kept = (peak, seg)
+            else:
+                dropped.append((peak, seg))
+
+        protocol.log(
+            f"[energy_gate] threshold={threshold:.4f} "
+            f"(abs_floor={_ABS_FLOOR}, active_p{_ACTIVE_PERCENTILE}={active_level:.4f} "
+            f"x {_REL_FACTOR} = {active_level * _REL_FACTOR:.4f}); "
+            f"kept {len(kept)}/{len(segments)}, dropped {len(dropped)}"
+        )
+        for peak, d in dropped:
+            protocol.log(
+                f"[energy_gate] DROPPED {d['start_ms']}-{d['end_ms']}ms "
+                f"peak={peak:.4f} (thr={threshold:.4f}) {d.get('text', '')[:24]!r}"
+            )
+        if closest_kept is not None:
+            peak, c = closest_kept
+            protocol.log(
+                f"[energy_gate] quietest kept cue: {c['start_ms']}-{c['end_ms']}ms "
+                f"peak={peak:.4f} (margin {peak / threshold:.1f}x over threshold) "
+                f"{c.get('text', '')[:24]!r}"
             )
         return kept
     except Exception as e:  # noqa: BLE001 - gate must never fail the pipeline

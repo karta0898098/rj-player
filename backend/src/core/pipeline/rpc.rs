@@ -138,6 +138,11 @@ pub struct GenerateSubtitlesParams {
     pub video_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_channel: Option<String>,
+    /// Vocal-energy gate mode: `"on"` / `"off"` / `"debug"` (see
+    /// `Config::vocal_energy_gate`). Passed straight through; the worker
+    /// only consults it when transcription actually used the separated
+    /// vocals.
+    pub energy_gate: String,
 }
 
 /// Params for the `retranslate` RPC method — re-runs ONLY the translate
@@ -850,6 +855,7 @@ mod tests {
                     lyrics_polish: false,
                     video_title: None,
                     video_channel: None,
+                    energy_gate: "on".to_string(),
                 },
                 |event| match event {
                     WorkerProgress::Stage(_) => saw_stage = true,
@@ -902,6 +908,7 @@ mod tests {
                     lyrics_polish: false,
                     video_title: None,
                     video_channel: None,
+                    energy_gate: "on".to_string(),
                 },
                 |_event| {},
             )
@@ -958,6 +965,7 @@ mod tests {
             lyrics_polish: false,
             video_title: None,
             video_channel: None,
+            energy_gate: "on".to_string(),
         }
     }
 

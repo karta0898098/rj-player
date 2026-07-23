@@ -93,6 +93,12 @@ pub struct Config {
     /// (degrades to the raw transcript without one). Env: `LYRICS_POLISH`.
     /// TOML: `[ai] lyrics_polish`. (default `auto`).
     pub lyrics_polish: String,
+    /// Vocal-energy gate mode (`ai/pipeline/energy_gate.py`, the
+    /// hallucinated-cue filter on Demucs-separated runs): `on` (default),
+    /// `off` (kill switch — e.g. when a quiet real first line gets eaten),
+    /// or `debug` (log an energy verdict for every cue, for threshold
+    /// tuning). Env: `VOCAL_ENERGY_GATE`. TOML: `[ai] vocal_energy_gate`.
+    pub vocal_energy_gate: String,
     /// Forces a translation LLM provider (`gemini`|`openai`|`anthropic`);
     /// `None` lets the AI worker auto-detect from whichever API key is
     /// present. Env: `LLM_PROVIDER`. TOML: `[llm] provider`.
@@ -143,6 +149,7 @@ struct FileAi {
     device: Option<String>,
     vocal_separation: Option<String>,
     lyrics_polish: Option<String>,
+    vocal_energy_gate: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -256,6 +263,10 @@ impl Config {
             .ok()
             .or_else(|| file.as_ref().and_then(|f| f.ai.lyrics_polish.clone()))
             .unwrap_or_else(|| "auto".to_string());
+        let vocal_energy_gate = std::env::var("VOCAL_ENERGY_GATE")
+            .ok()
+            .or_else(|| file.as_ref().and_then(|f| f.ai.vocal_energy_gate.clone()))
+            .unwrap_or_else(|| "on".to_string());
 
         let llm_provider = std::env::var("LLM_PROVIDER")
             .ok()
@@ -289,6 +300,7 @@ impl Config {
             device,
             vocal_separation,
             lyrics_polish,
+            vocal_energy_gate,
             llm_provider,
             llm_model,
             gemini_api_key,
@@ -431,6 +443,12 @@ impl Config {
     /// [`Self::live_vocal_separation`] — same global-knob semantics).
     pub fn live_lyrics_polish(&self) -> String {
         live_setting("LYRICS_POLISH").unwrap_or_else(|| self.lyrics_polish.clone())
+    }
+
+    /// Live counterpart to `vocal_energy_gate` (see
+    /// [`Self::live_vocal_separation`] — same global-knob semantics).
+    pub fn live_vocal_energy_gate(&self) -> String {
+        live_setting("VOCAL_ENERGY_GATE").unwrap_or_else(|| self.vocal_energy_gate.clone())
     }
 
     /// Create the data directory tree if it doesn't exist yet (boot-time init).

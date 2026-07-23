@@ -104,6 +104,7 @@ pub async fn run_pipeline(
     device: &str,
     vocal_separation: &str,
     lyrics_polish: &str,
+    vocal_energy_gate: &str,
     force: bool,
     overrides: &PipelineOverrides,
 ) {
@@ -310,6 +311,7 @@ pub async fn run_pipeline(
         // Context for the polish prompt — which song is being proofread.
         video_title: Some(meta.title.clone()).filter(|t| !t.is_empty()),
         video_channel: Some(meta.channel.clone()).filter(|c| !c.is_empty()),
+        energy_gate: vocal_energy_gate.to_string(),
     };
 
     // The pre-translate snapshot write below is spawned (the progress
@@ -695,7 +697,7 @@ mod tests {
 
         seed_video(&store, "abc12345678", VideoStatus::Downloaded).await;
 
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "abc12345678", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "abc12345678", "small", 0.0, "int8", "cpu", "auto", "off", "on", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("abc12345678").await.unwrap().unwrap();
@@ -744,6 +746,7 @@ mod tests {
                 "cpu",
                 "auto",
                 "off",
+                "on",
                 false,
                 &PipelineOverrides::default(),
             )
@@ -879,6 +882,7 @@ mod tests {
             "cpu",
             "auto",
             "off",
+            "on",
             false,
             &PipelineOverrides::default(),
         )
@@ -936,6 +940,7 @@ mod tests {
             "cpu",
             "auto",
             "off",
+            "on",
             false,
             &PipelineOverrides::default(),
         )
@@ -988,6 +993,7 @@ mod tests {
             "cpu",
             "auto",
             "off",
+            "on",
             false,
             &PipelineOverrides::default(),
         )
@@ -1048,7 +1054,7 @@ mod tests {
             .await
             .unwrap();
 
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0001", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0001", "small", 0.0, "int8", "cpu", "auto", "off", "on", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("musicvid0001").await.unwrap().unwrap();
@@ -1079,7 +1085,7 @@ mod tests {
             .await
             .unwrap();
 
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0002", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0002", "small", 0.0, "int8", "cpu", "auto", "off", "on", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("musicvid0002").await.unwrap().unwrap();
@@ -1106,7 +1112,7 @@ mod tests {
 
         // vocal_separation "off" so no extraction is attempted; polish "auto"
         // follows is_music_video -> on.
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "polishvid001", "small", 0.0, "int8", "cpu", "off", "auto", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "polishvid001", "small", 0.0, "int8", "cpu", "off", "auto", "on", false, &PipelineOverrides::default())
             .await;
 
         let doc = store.load_subtitles("polishvid001").await.unwrap().unwrap();
@@ -1135,7 +1141,7 @@ mod tests {
             separate_vocals: Some(true),
             ..PipelineOverrides::default()
         };
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0003", "small", 0.0, "int8", "cpu", "off", "off", false, &overrides)
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0003", "small", 0.0, "int8", "cpu", "off", "off", "on", false, &overrides)
             .await;
 
         let doc = store.load_subtitles("musicvid0003").await.unwrap().unwrap();
@@ -1167,7 +1173,7 @@ mod tests {
         };
         store.save_subtitles(&doc).await.unwrap();
 
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "cachedvideo1", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "cachedvideo1", "small", 0.0, "int8", "cpu", "auto", "off", "on", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("cachedvideo1").await.unwrap().unwrap();
@@ -1190,7 +1196,7 @@ mod tests {
         // the assertions below additionally confirm the *specific*
         // failure-isolation contract (dsd.md §7): status flips to
         // pipeline_failed with a recorded error, nothing left half-written.
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "crashvideo01", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "crashvideo01", "small", 0.0, "int8", "cpu", "auto", "off", "on", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("crashvideo01").await.unwrap().unwrap();
@@ -1221,7 +1227,7 @@ mod tests {
         meta.status = VideoStatus::Downloaded;
         store.save_meta(&meta).await.unwrap();
 
-        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "noaudiovid1", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "noaudiovid1", "small", 0.0, "int8", "cpu", "auto", "off", "on", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("noaudiovid1").await.unwrap().unwrap();
@@ -1260,6 +1266,7 @@ mod tests {
             "cpu",
             "auto",
             "off",
+            "on",
             false,
             &PipelineOverrides::default(),
         )
