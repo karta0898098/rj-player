@@ -126,6 +126,17 @@ export default function CustomSelect({ theme, value, onChange, options, ariaLabe
             ref={menuRef}
             role="listbox"
             className="rj-pop-in subtitle-scroll"
+            // The menu is portaled to <body>, i.e. OUTSIDE the popover/panel the
+            // trigger lives in. Those parents close themselves on a document
+            // `pointerdown`/`mousedown` whose target isn't inside their own ref
+            // (e.g. App.jsx's add-to-queue popover) — and a portaled option IS
+            // outside it, so a real pointer click on an option closed the whole
+            // popover before the option's `click`/onChange fired ("can't select
+            // 畫質"). Stop those pointer events from bubbling to document so the
+            // parent's outside-close never sees them. (JS `.click()` fires only
+            // `click`, not pointerdown, which is why synthetic tests missed it.)
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
             style={{
               position: 'fixed',
               top: rect.bottom + 4,
