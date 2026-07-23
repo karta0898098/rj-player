@@ -90,5 +90,42 @@ class EnergyGateTests(unittest.TestCase):
         self.assertEqual(energy_gate.filter_segments([], self.vocals), [])
 
 
+class VoicedRegionsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _wav(self, name, **kwargs):
+        path = os.path.join(self._tmp.name, name)
+        _write_wav(path, **kwargs)
+        return path
+
+    def test_single_region_covers_tone_with_padding(self):
+        # Tone 2-4s -> one region ~[1.5, 4.5] (0.5s pad each side).
+        regions = energy_gate.voiced_regions(self._wav("v.wav"))
+        self.assertEqual(len(regions), 2)
+        start, end = regions
+        self.assertAlmostEqual(start, 1.5, delta=0.2)
+        self.assertAlmostEqual(end, 4.5, delta=0.2)
+
+    def test_regions_never_start_before_zero(self):
+        regions = energy_gate.voiced_regions(
+            self._wav("v.wav", tone_start=0.2, tone_end=1.0)
+        )
+        self.assertGreaterEqual(regions[0], 0.0)
+
+    def test_all_silence_returns_none(self):
+        self.assertIsNone(
+            energy_gate.voiced_regions(
+                self._wav("s.wav", tone_start=99, tone_end=99)
+            )
+        )
+
+    def test_unreadable_file_returns_none(self):
+        self.assertIsNone(
+            energy_gate.voiced_regions(os.path.join(self._tmp.name, "nope.wav"))
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

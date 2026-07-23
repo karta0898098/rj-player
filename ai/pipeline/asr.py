@@ -138,6 +138,7 @@ def transcribe(
     compute_type: str = "int8",
     device: str = "cpu",
     separated: bool = False,
+    clip_timestamps: Optional[list[float]] = None,
 ) -> tuple[list[Segment], int]:
     """Run ASR on audio_path. Returns (segments, duration_ms).
 
@@ -167,6 +168,13 @@ def transcribe(
     that constant for the reasoning). Explicit `vad_overrides` still win
     either way -- the frontend only sends knobs the user actually changed,
     so an untouched knob correctly falls through to the right default set.
+
+    `clip_timestamps` is faster-whisper's flat `[start, end, ...]` seconds
+    list: transcribe ONLY these windows (segment timestamps stay absolute).
+    Supplied by worker.py from `energy_gate.voiced_regions` on separated
+    runs with VAD off, so Whisper never sees a silence-dominated window (the
+    "first sung line swallowed into a 30s intro window as hallucinated
+    text" failure). `None` -> whole audio, exactly as before.
     """
     model = _get_model(model_size, compute_type, device)
 
@@ -218,6 +226,10 @@ def transcribe(
     )
     if vad_filter:
         transcribe_kwargs["vad_parameters"] = vad_parameters
+    # Mutually exclusive with the VAD pre-filter (faster-whisper rejects the
+    # combination; with VAD on, Silero already does region selection anyway).
+    if clip_timestamps and not vad_filter:
+        transcribe_kwargs["clip_timestamps"] = clip_timestamps
     # Only bias decoding with an initial_prompt when one was actually given;
     # an empty/None prompt must behave identically to never passing the
     # kwarg at all.

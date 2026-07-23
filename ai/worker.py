@@ -306,6 +306,20 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             # it's going to run — one continuous progress sweep either way.
             transcribe_end = 85 if lyrics_polish else 100
             asr_audio, asr_progress = resolve_asr_audio(transcribe_end)
+            # Energy-guided clip windows (energy_gate.voiced_regions): on a
+            # separated run with VAD off, transcribe only the voiced
+            # regions so Whisper never sees a silence-dominated window —
+            # the source of both intro hallucinations AND the first sung
+            # line getting swallowed into one. Shares the gate's kill
+            # switch: "off" disables both layers.
+            gate_mode = (
+                params.get("energy_gate")
+                or os.environ.get("VOCAL_ENERGY_GATE")
+                or "on"
+            ).strip().lower()
+            clip_ts = None
+            if asr_audio == vocals_path and not vad_filter and gate_mode != "off":
+                clip_ts = energy_gate.voiced_regions(vocals_path)
             raw_segments, duration_ms = asr.transcribe(
                 asr_audio,
                 source_lang,
@@ -321,6 +335,7 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 # defaults apply (asr._SEPARATED_VAD_PARAMS); explicit
                 # per-request overrides still win inside transcribe.
                 separated=asr_audio == vocals_path,
+                clip_timestamps=clip_ts,
             )
             source = "asr"
             # Vocal-energy gate (energy_gate.py): only meaningful when we
@@ -329,16 +344,12 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             # Runs BEFORE polish so the LLM never wastes tokens correcting
             # hallucinated intro/interlude cues.
             #
-            # Mode: "on" (default) | "off" (kill switch) | "debug" (log a
-            # verdict line for EVERY cue, for threshold tuning). The RPC
-            # param (config.toml `[ai] vocal_energy_gate`, live per job)
-            # wins; the VOCAL_ENERGY_GATE env var is the no-backend
-            # fallback for driving worker.py directly.
-            gate_mode = (
-                params.get("energy_gate")
-                or os.environ.get("VOCAL_ENERGY_GATE")
-                or "on"
-            ).strip().lower()
+            # Mode (`gate_mode`, resolved above): "on" (default) | "off"
+            # (kill switch for both the clip windows and this filter) |
+            # "debug" (log a verdict line for EVERY cue, for threshold
+            # tuning). The RPC param (config.toml `[ai] vocal_energy_gate`,
+            # live per job) wins; the VOCAL_ENERGY_GATE env var is the
+            # no-backend fallback for driving worker.py directly.
             if asr_audio == vocals_path and raw_segments and gate_mode != "off":
                 raw_segments = energy_gate.filter_segments(
                     raw_segments, vocals_path, debug=gate_mode == "debug"

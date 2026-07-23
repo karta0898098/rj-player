@@ -67,6 +67,81 @@ def _frame_rms(vocals_path: str) -> Optional[tuple["object", int]]:
     return np.sqrt((trimmed**2).mean(axis=1)), _FRAME_MS
 
 
+# voiced_regions knobs: pad each region so quiet onsets/tails aren't
+# clipped, and merge regions separated by short gaps (breaths, beat rests)
+# so a phrase isn't fragmented into confetti.
+_REGION_PAD_S = 0.5
+_REGION_MERGE_GAP_S = 1.0
+
+
+def voiced_regions(vocals_path: str) -> Optional[list[float]]:
+    """Voiced time regions of the separated vocals, as a flat
+    `[start, end, start, end, ...]` list in seconds — the exact shape
+    faster-whisper's `clip_timestamps` takes.
+
+    This is the *pre*-transcription counterpart of `filter_segments`:
+    instead of dropping hallucinated cues afterwards, don't show Whisper
+    the silence in the first place. The observed failure it fixes: with
+    VAD off, a long instrumental intro plus the first short sung phrase
+    land in one silence-dominated 30s window, and Whisper hallucinates the
+    whole window's text — the first real line's words are swallowed. With
+    clips, the first window starts ~0.5s before the first vocal onset.
+
+    Returns None when no usable signal exists (unreadable wav, no voiced
+    frames at all, any error) — the caller then transcribes the full audio
+    exactly as before. Same threshold derivation as `filter_segments`, so
+    the two layers agree on what counts as vocal energy.
+    """
+    try:
+        profile = _frame_rms(vocals_path)
+        if profile is None:
+            return None
+        rms, frame_ms = profile
+
+        import numpy as np
+
+        active_level = float(np.percentile(rms, _ACTIVE_PERCENTILE))
+        threshold = max(_ABS_FLOOR, active_level * _REL_FACTOR)
+        voiced = rms >= threshold
+        if not bool(voiced.any()):
+            return None
+
+        total_s = len(rms) * frame_ms / 1000.0
+        regions: list[list[float]] = []
+        start: Optional[float] = None
+        for i, v in enumerate(voiced):
+            t = i * frame_ms / 1000.0
+            if v and start is None:
+                start = t
+            elif not v and start is not None:
+                regions.append([start, t])
+                start = None
+        if start is not None:
+            regions.append([start, total_s])
+
+        # Pad, clamp, then merge overlapping/near regions.
+        padded = [
+            [max(0.0, s - _REGION_PAD_S), min(total_s, e + _REGION_PAD_S)]
+            for s, e in regions
+        ]
+        merged: list[list[float]] = []
+        for s, e in padded:
+            if merged and s - merged[-1][1] <= _REGION_MERGE_GAP_S:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+
+        protocol.log(
+            f"[energy_gate] {len(merged)} voiced region(s) for clip_timestamps; "
+            f"first starts at {merged[0][0]:.1f}s "
+            f"(skipping {merged[0][0]:.1f}s of vocal-free lead-in)"
+        )
+        return [x for region in merged for x in region]
+    except Exception as e:  # noqa: BLE001 - region finding must never fail the pipeline
+        protocol.log(f"[energy_gate] voiced-region scan failed ({e}); transcribing full audio")
+        return None
+
+
 def filter_segments(
     segments: list[dict], vocals_path: str, debug: bool = False
 ) -> list[dict]:
