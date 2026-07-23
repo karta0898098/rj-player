@@ -1,6 +1,6 @@
 [package]
 name = "rj-player-desktop"
-version = "0.1.7"
+version = "0.1.8"
 description = "rj-player desktop shell (Tauri v2) — embeds the axum backend and serves the same frontend/ SPA"
 authors = ["Ray Chang"]
 license = ""
