@@ -618,11 +618,20 @@ async fn fix_download_model(hub: &DoctorHub, config: &Config) -> Result<(), Stri
     if !python.is_file() {
         return Err("managed Python not installed yet — run install_deps first".into());
     }
+    let model = current_whisper_model(config);
+    // The name is interpolated into `python -c` source: restrict it to the
+    // character set real faster-whisper names use so a hand-edited
+    // settings.json / env var can't break out of the string literal.
+    if !model
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(format!("invalid whisper model name: {model:?}"));
+    }
     let code = format!(
         "from faster_whisper import WhisperModel; \
-         WhisperModel('{}', device='cpu', compute_type='int8'); \
-         print('model ready')",
-        current_whisper_model(config)
+         WhisperModel('{model}', device='cpu', compute_type='int8'); \
+         print('model ready')"
     );
     let mut cmd = Command::new(python);
     cmd.hide_console().arg("-c").arg(code);

@@ -8,6 +8,7 @@
 //! before; `config.toml` exists so a user can set things once instead of
 //! exporting env vars every run.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -359,52 +360,110 @@ impl Config {
         self.data_dir.join("videos")
     }
 
-    /// The Whisper model in effect right now: a live `WHISPER_MODEL` env
-    /// override (set by the desktop shell's settings commands without a
-    /// restart, dsd.md §13.7) wins over the value resolved at startup. Used
-    /// wherever a value needs to reflect a just-changed setting immediately
-    /// rather than whatever `Config::load` saw at process start — the Doctor
-    /// report and the job queue's fallback default both need this.
+    /// The Whisper model in effect right now: a live settings-page override
+    /// (set by the desktop shell's settings commands without a restart,
+    /// dsd.md §13.7) or env var wins over the value resolved at startup.
+    /// Used wherever a value needs to reflect a just-changed setting
+    /// immediately rather than whatever `Config::load` saw at process start
+    /// — the Doctor report and the job queue's fallback default both need
+    /// this.
     pub fn live_whisper_model(&self) -> String {
-        std::env::var("WHISPER_MODEL")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| self.whisper_model.clone())
+        live_setting("WHISPER_MODEL").unwrap_or_else(|| self.whisper_model.clone())
     }
 
-    /// Live-env-wins counterpart to `whisper_temperature` (see
+    /// Live counterpart to `whisper_temperature` (see
     /// [`Self::live_whisper_model`]).
     pub fn live_whisper_temperature(&self) -> f32 {
-        std::env::var("WHISPER_TEMPERATURE")
-            .ok()
+        live_setting("WHISPER_TEMPERATURE")
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(self.whisper_temperature)
     }
 
-    /// Live-env-wins counterpart to `compute_type` (see
+    /// Live counterpart to `compute_type` (see
     /// [`Self::live_whisper_model`]). Unlike `whisper_model`, `compute_type`
     /// has no per-request override at all (dsd.md §13.7 scopes it as a
     /// global settings-page knob only) — this live read is the *only* way a
     /// settings-page change takes effect without a full restart.
     pub fn live_compute_type(&self) -> String {
-        std::env::var("WHISPER_COMPUTE_TYPE")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| self.compute_type.clone())
+        live_setting("WHISPER_COMPUTE_TYPE").unwrap_or_else(|| self.compute_type.clone())
     }
 
-    /// Live-env-wins counterpart to `device` (see [`Self::live_whisper_model`]).
+    /// Live counterpart to `device` (see [`Self::live_whisper_model`]).
     pub fn live_device(&self) -> String {
-        std::env::var("WHISPER_DEVICE")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| self.device.clone())
+        live_setting("WHISPER_DEVICE").unwrap_or_else(|| self.device.clone())
     }
 
     /// Create the data directory tree if it doesn't exist yet (boot-time init).
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.videos_dir())
     }
+}
+
+// ---- Live settings overrides (dsd.md §13.7) -------------------------------
+//
+// The desktop shell used to reflect settings-page changes by calling
+// `std::env::set_var` on the running process — but mutating the environment
+// while other threads read it (every job's `live_*` read, the Doctor's
+// checks) races the C runtime's environ and is undefined behavior; Rust 2024
+// marks `set_var` unsafe for exactly this. This registry is the thread-safe
+// replacement: the shell's `set_*` commands write here, the `live_*`
+// accessors (and the worker spawn) read here. Startup-time `set_var` calls
+// (before the runtime threads exist) are unaffected and stay as env vars.
+
+static LIVE_OVERRIDES: std::sync::OnceLock<std::sync::RwLock<HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+fn live_overrides() -> &'static std::sync::RwLock<HashMap<String, String>> {
+    LIVE_OVERRIDES.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+/// Record a runtime settings change under its env-var key. An empty value is
+/// a tombstone: "explicitly cleared", masking any launch-time env var (the
+/// old `set_var`/`remove_var` semantics, where the latest UI action won).
+pub fn set_live_override(key: &str, value: &str) {
+    live_overrides()
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key.to_string(), value.to_string());
+}
+
+/// The current live value for a settings key: the most recent in-process
+/// override if any (empty = explicitly cleared → `None`), else the process
+/// env var (empty treated as unset).
+pub fn live_setting(key: &str) -> Option<String> {
+    let overridden = live_overrides()
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key)
+        .cloned();
+    match overridden {
+        Some(v) if v.is_empty() => None,
+        Some(v) => Some(v),
+        None => std::env::var(key).ok().filter(|v| !v.is_empty()),
+    }
+}
+
+/// Every recorded override, for reflecting runtime changes into a child
+/// process's environment (the AI worker inherits the parent env, which no
+/// longer mutates after startup — `RpcClient::spawn_worker` applies these on
+/// top; empty values mean "remove from the child env").
+pub fn live_overrides_snapshot() -> Vec<(String, String)> {
+    live_overrides()
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Test isolation: the registry is process-global, so tests that write it
+/// must wipe it (under `ENV_TEST_LOCK`) to not leak into other tests.
+#[cfg(test)]
+pub(crate) fn reset_live_overrides_for_tests() {
+    live_overrides()
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
 }
 
 #[cfg(test)]
@@ -573,6 +632,10 @@ temperature = 0.4
     fn live_getters_prefer_a_later_env_change_over_the_loaded_snapshot() {
         let _lock = lock_env();
         let _guard = EnvGuard(TEST_ENV_KEYS);
+        // live_* consults the (process-global) override registry before the
+        // env — make sure a leak from another test can't shadow the env
+        // values this test asserts on.
+        reset_live_overrides_for_tests();
         for key in TEST_ENV_KEYS {
             std::env::remove_var(key);
         }
@@ -583,8 +646,9 @@ temperature = 0.4
         assert_eq!(cfg.live_compute_type(), cfg.compute_type);
         assert_eq!(cfg.live_device(), cfg.device);
 
-        // Simulate a settings-page write (Tauri's `set_compute_type`/etc.
-        // just do `std::env::set_var`) happening after `cfg` was loaded.
+        // Simulate a launch-time env override happening after `cfg` was
+        // loaded (settings-page writes now go through the live-override
+        // registry instead — covered by live_override_precedence below).
         std::env::set_var("WHISPER_MODEL", "small");
         std::env::set_var("WHISPER_TEMPERATURE", "0.7");
         std::env::set_var("WHISPER_COMPUTE_TYPE", "float32");
@@ -599,5 +663,41 @@ temperature = 0.4
         // that's precisely the bug `live_*` exists to work around.
         assert_eq!(cfg.whisper_model, "large-v3");
         assert_eq!(cfg.compute_type, "int8");
+    }
+
+    /// The live-override registry (the settings page's thread-safe channel,
+    /// replacing runtime `set_var`): an override wins over the env, and an
+    /// empty override is a tombstone that masks the env entirely.
+    #[test]
+    fn live_override_precedence() {
+        let _lock = lock_env();
+        let _guard = EnvGuard(TEST_ENV_KEYS);
+        reset_live_overrides_for_tests();
+        for key in TEST_ENV_KEYS {
+            std::env::remove_var(key);
+        }
+
+        let cfg = Config::load();
+
+        // Registry write alone is visible on the next live read.
+        set_live_override("WHISPER_DEVICE", "cuda");
+        assert_eq!(cfg.live_device(), "cuda");
+
+        // Registry wins over a conflicting env var (the settings page's
+        // change is the most recent user action, matching the old
+        // set_var-stomps-env semantics).
+        std::env::set_var("WHISPER_DEVICE", "cpu");
+        assert_eq!(cfg.live_device(), "cuda");
+
+        // Tombstone: an empty override masks the env and falls back to the
+        // loaded config value.
+        set_live_override("WHISPER_DEVICE", "");
+        assert_eq!(cfg.live_device(), cfg.device);
+
+        // The snapshot (worker child-env reflection) carries the tombstone.
+        let snap = live_overrides_snapshot();
+        assert!(snap.iter().any(|(k, v)| k == "WHISPER_DEVICE" && v.is_empty()));
+
+        reset_live_overrides_for_tests();
     }
 }

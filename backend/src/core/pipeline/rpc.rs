@@ -642,6 +642,20 @@ impl RpcClient {
         for (key, value) in &self.extra_env {
             command.env(key, value);
         }
+        // Runtime settings changes (dsd.md §13.7) no longer mutate the parent
+        // process env (that raced concurrent readers — see config.rs's live
+        // overrides registry), so reflect them into the child env here: a
+        // just-saved API key reaches a freshly spawned worker, and a
+        // tombstoned (cleared) key is genuinely absent, which §7's
+        // degradation depends on. Applied after extra_env so the most recent
+        // settings change wins over the startup snapshot.
+        for (key, value) in crate::config::live_overrides_snapshot() {
+            if value.is_empty() {
+                command.env_remove(&key);
+            } else {
+                command.env(&key, &value);
+            }
+        }
         let mut child = command.spawn()?;
 
         let stdin = child.stdin.take().expect("stdin was piped");

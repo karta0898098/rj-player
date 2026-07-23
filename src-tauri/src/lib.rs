@@ -360,23 +360,27 @@ fn inject_keychain_llm_keys() {
     }
 }
 
-/// Store (or replace) a provider's API key in the OS keychain, and reflect it in
-/// this process's env so a freshly spawned worker picks it up without a restart.
+/// Store (or replace) a provider's API key in the OS keychain, and record it
+/// as a live override so a freshly spawned worker picks it up without a
+/// restart (via the registry → child-env reflection in the backend's worker
+/// spawn — not `set_var`, which would race concurrent env readers).
 #[tauri::command]
 fn set_llm_key(provider: String, key: String) -> Result<(), String> {
     let entry = keychain_entry(&provider).map_err(|e| e.to_string())?;
     entry.set_password(&key).map_err(|e| e.to_string())?;
     if let Some((_, env_key)) = LLM_PROVIDERS.iter().find(|(p, _)| *p == provider) {
-        std::env::set_var(env_key, &key);
+        rj_player_backend::config::set_live_override(env_key, &key);
     }
     Ok(())
 }
 
-/// Remove a provider's stored key (idempotent).
+/// Remove a provider's stored key (idempotent). The empty override is a
+/// tombstone: it masks any launch-time env var and is stripped from a fresh
+/// worker's env, preserving the old `remove_var` semantics safely.
 #[tauri::command]
 fn clear_llm_key(provider: String) -> Result<(), String> {
     if let Some((_, env_key)) = LLM_PROVIDERS.iter().find(|(p, _)| *p == provider) {
-        std::env::remove_var(env_key);
+        rj_player_backend::config::set_live_override(env_key, "");
     }
     match keychain_entry(&provider).and_then(|e| e.delete_credential()) {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -420,7 +424,11 @@ fn write_setting(
         serde_json::to_string_pretty(&settings).unwrap_or_default(),
     )
     .map_err(|e| e.to_string())?;
-    std::env::set_var(env_key, env_value);
+    // NOT std::env::set_var: mutating the process env while backend threads
+    // read it concurrently races the C runtime's environ (UB — Rust 2024
+    // marks set_var unsafe for this). The backend's live-override registry
+    // is the thread-safe channel; live_* reads and worker spawns consult it.
+    rj_player_backend::config::set_live_override(env_key, env_value);
     Ok(())
 }
 
@@ -496,15 +504,14 @@ fn get_settings(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
         key: &str,
         default: &str,
     ) -> String {
-        std::env::var(env_key)
-            .ok()
-            .filter(|v| !v.is_empty())
+        // live_setting = the settings-page override registry, else the env
+        // var — i.e. exactly what the backend's own live_* reads resolve to.
+        rj_player_backend::config::live_setting(env_key)
             .or_else(|| settings.get(key).and_then(|v| v.as_str()).map(str::to_string))
             .unwrap_or_else(|| default.to_string())
     }
 
-    let whisper_temperature = std::env::var("WHISPER_TEMPERATURE")
-        .ok()
+    let whisper_temperature = rj_player_backend::config::live_setting("WHISPER_TEMPERATURE")
         .and_then(|v| v.parse::<f64>().ok())
         .or_else(|| settings.get("whisper_temperature").and_then(|v| v.as_f64()))
         .unwrap_or(0.0);

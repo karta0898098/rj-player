@@ -61,7 +61,13 @@ pub async fn get_models() -> Json<ModelCacheReport> {
 }
 
 /// Delete one cached model. 404 if it wasn't cached.
-pub async fn delete_model(Path(model): Path<String>) -> Response {
+///
+/// Shuts the AI worker down first: a loaded model is memory-mapped, and on
+/// Windows an mmap holds a file lock — the delete would fail with a sharing
+/// violation while the worker lives (macOS happily unlinks mapped files, so
+/// this only ever bit Windows). The worker respawns lazily on the next job.
+pub async fn delete_model(State(state): State<SharedState>, Path(model): Path<String>) -> Response {
+    state.rpc.shutdown().await;
     match doctor::delete_cached_model(&model) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (
@@ -77,8 +83,9 @@ pub async fn delete_model(Path(model): Path<String>) -> Response {
     }
 }
 
-/// Clear every cached model.
-pub async fn clear_models() -> Response {
+/// Clear every cached model. Worker shutdown first, same as [`delete_model`].
+pub async fn clear_models(State(state): State<SharedState>) -> Response {
+    state.rpc.shutdown().await;
     match doctor::clear_model_cache() {
         Ok(removed) => (StatusCode::OK, Json(json!({ "removed": removed }))).into_response(),
         Err(err) => (
