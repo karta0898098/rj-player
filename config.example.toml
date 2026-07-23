@@ -60,6 +60,26 @@ whisper_model = "large-v3"
 # Whisper sampling temperature; 0.0 = deterministic. Env: WHISPER_TEMPERATURE.
 temperature = 0.0
 
+# Demucs vocal separation before ASR (improves lyrics transcription by
+# stripping the instrumental):
+#   "auto"   = only for videos flagged as music videos (default)
+#   "off"    = globally disabled; per-request overrides can't turn it on
+#   "always" = every video
+# Requires the optional demucs deps (ai/requirements-demucs.txt); when they
+# aren't installed the worker logs a warning and transcribes the original
+# audio unchanged. Env: VOCAL_SEPARATION.
+# vocal_separation = "auto"
+
+# LLM lyrics polish after ASR (LyricWhiz-style: the translation LLM
+# proofreads the transcript against the video title/channel context and
+# fixes mis-heard sung words; timing untouched):
+#   "auto"   = only for videos flagged as music videos (default)
+#   "off"    = globally disabled; per-request overrides can't turn it on
+#   "always" = every video
+# Uses the same [llm] provider/key as translation; without a key the raw
+# transcript is kept unchanged. Env: LYRICS_POLISH.
+# lyrics_polish = "auto"
+
 [llm]
 # Translation provider: "gemini" | "openai" | "anthropic". Env:
 # LLM_PROVIDER. Leave unset to auto-detect from whichever *_api_key below

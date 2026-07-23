@@ -18,6 +18,25 @@ const MAX_HEIGHT_OPTIONS = [
 ];
 const WHISPER_MODEL_OPTIONS = WHISPER_MODELS.map((m) => ({ value: m, label: m }));
 
+// Per-request Demucs vocal-separation override (backend `separate_vocals`):
+// 'default' -> omit (follow the global 人聲分離 policy — under "auto" that
+// means "separate iff 音樂 MV"), 'on'/'off' -> force for this run. A global
+// policy of "off" is a hard kill-switch that beats 'on' (the settings-page
+// hint says so).
+export const SEPARATE_VOCALS_OPTIONS = [
+  { value: 'default', label: '依全域設定（預設）' },
+  { value: 'on', label: '強制執行' },
+  { value: 'off', label: '此影片停用' },
+];
+
+// Per-request LLM lyrics-polish override (backend `lyrics_polish`) — same
+// tri-state semantics as SEPARATE_VOCALS_OPTIONS.
+export const LYRICS_POLISH_OPTIONS = [
+  { value: 'default', label: '依全域設定（預設）' },
+  { value: 'on', label: '強制執行' },
+  { value: 'off', label: '此影片停用' },
+];
+
 // The Whisper/VAD/prompt knob controls shared between SettingsPopover's
 // "進階：字幕產生設定" (regenerate an already-loaded video) and the
 // add-to-queue form (pre-select options for a video that hasn't been
@@ -68,6 +87,10 @@ export default function GenerationOptionsForm({
   onVadMaxSpeechSChange,
   isMusicVideo,
   onIsMusicVideoChange,
+  separateVocals,
+  onSeparateVocalsChange,
+  lyricsPolish,
+  onLyricsPolishChange,
   onResetGenerationSettings,
 }) {
   const compactInputStyle = {
@@ -133,6 +156,38 @@ export default function GenerationOptionsForm({
           </label>
           <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
             依 YouTube 分類自動偵測；勾選後會套用歌詞辨識提示與較適合歌唱的 VAD 參數
+          </div>
+        </div>
+      )}
+
+      {onSeparateVocalsChange && sourceLang !== 'en' && (
+        <div>
+          <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>人聲分離 (separate_vocals)</div>
+          <CustomSelect
+            theme={theme}
+            value={separateVocals}
+            onChange={onSeparateVocalsChange}
+            options={SEPARATE_VOCALS_OPTIONS}
+            ariaLabel="人聲分離"
+          />
+          <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
+            以 Demucs 先分離人聲再辨識，音樂影片歌詞品質更好；全域設定為「關閉」時無法強制開啟
+          </div>
+        </div>
+      )}
+
+      {onLyricsPolishChange && sourceLang !== 'en' && (
+        <div>
+          <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>歌詞修正 (lyrics_polish)</div>
+          <CustomSelect
+            theme={theme}
+            value={lyricsPolish}
+            onChange={onLyricsPolishChange}
+            options={LYRICS_POLISH_OPTIONS}
+            ariaLabel="歌詞修正"
+          />
+          <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
+            辨識後由 LLM 依標題脈絡校對聽錯的歌詞（僅修字、不動時間軸）；需要翻譯 API Key
           </div>
         </div>
       )}

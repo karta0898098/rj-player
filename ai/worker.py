@@ -43,7 +43,7 @@ import json
 import os
 import sys
 
-from pipeline import align, asr, assemble, cc, protocol, translate
+from pipeline import align, asr, assemble, cc, polish, protocol, separate, translate
 
 # tokenizer/romaji are imported lazily (inside the `reading` branch of
 # run_generate_subtitles below) rather than here at module scope: both pull
@@ -158,14 +158,76 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
     # When present, the translate stage below time-overlap-merges it onto
     # the source timeline instead of calling the LLM.
     target_cc_path = params.get("target_cc_path") or None
+    # Demucs vocal separation (ai/pipeline/separate.py). The Rust
+    # orchestrator has already resolved the global policy + per-request
+    # override + is_music_video into this one flag, and supplies both paths:
+    # `vocals_path` (the 16kHz mono output, doubling as the cache) and
+    # `audio_hq_path` (the transient 44.1kHz stereo Demucs input). Only the
+    # two branches that actually feed audio to a model (free ASR and forced
+    # alignment) act on it — the CC branches never touch the waveform.
+    separate_vocals = bool(params.get("separate_vocals", False))
+    vocals_path = params.get("vocals_path") or None
+    audio_hq_path = params.get("audio_hq_path") or None
+    # LLM lyrics polish (ai/pipeline/polish.py, the LyricWhiz-style
+    # correction pass). Like separate_vocals, the orchestrator has already
+    # resolved policy + override + is_music_video into one flag. Only the
+    # free-ASR branch acts on it — reference_lyrics/CC text is already
+    # correct, and cc_reverse text is already LLM-generated. Title/channel
+    # give the LLM a strong hint at WHICH song it's proofreading.
+    lyrics_polish = bool(params.get("lyrics_polish", False))
+    video_title = params.get("video_title") or None
+    video_channel = params.get("video_channel") or None
 
     current_stage = "asr"
     cues: list[dict] = []
     duration_ms: int | None = None
     source: str | None = None
     target_source: str | None = None
+    polished: bool | None = None
 
     try:
+
+        def asr_pct(base: int, end: int):
+            """A progress emitter mapping a sub-step's 0-100 onto the asr
+            stage's [base, end] window — everything that happens before
+            tokenize (separation, transcription, polish) shares the single
+            "asr" stage, same reasoning as alignment reusing it (the status
+            machine has no distinct states for them)."""
+            span = end - base
+            return lambda pct: emit_fn(
+                {
+                    "id": req_id,
+                    "event": "progress",
+                    "stage": "asr",
+                    "pct": base + int(pct * span / 100),
+                }
+            )
+
+        def resolve_asr_audio(transcribe_end: int = 100):
+            """Demucs vocal separation, when the orchestrator asked for it.
+
+            Returns `(audio_for_asr, asr_progress_fn)`. Without separation
+            (or when it fails/degrades — separate.separate never raises)
+            that's the original `audio_path` with progress spanning
+            [0, transcribe_end]. With separation, separation itself maps
+            onto 0-30% and transcription onto [30, transcribe_end].
+            `transcribe_end` < 100 leaves headroom for a follow-up sub-step
+            (the lyrics-polish pass). Only called from the two branches
+            that feed audio to a model.
+            """
+            plain = (audio_path, asr_pct(0, transcribe_end))
+            if not (separate_vocals and vocals_path):
+                return plain
+            ok = separate.separate(
+                audio_hq_path,
+                vocals_path,
+                device=device,
+                on_progress=asr_pct(0, 30),
+            )
+            if not ok:
+                return plain
+            return (vocals_path, asr_pct(30, transcribe_end))
+
         # ---- ASR, or one of its two higher-precedence substitutes ----
         current_stage = "asr"
         emit_fn({"id": req_id, "event": "stage", "stage": "asr", "status": "start"})
@@ -174,14 +236,13 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             # (dsd.md §5.3) doesn't get a distinct state for alignment, it's
             # just a different way of producing the same (segments,
             # duration_ms) shape the rest of the pipeline consumes.
+            asr_audio, asr_progress = resolve_asr_audio()
             raw_segments, duration_ms = align.align(
-                audio_path,
+                asr_audio,
                 reference_lyrics,
                 source_lang,
                 whisper_model,
-                on_progress=lambda pct: emit_fn(
-                    {"id": req_id, "event": "progress", "stage": "asr", "pct": pct}
-                ),
+                on_progress=asr_progress,
                 compute_type=compute_type,
                 device=device,
             )
@@ -241,21 +302,45 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             )
             source = "cc_reverse"
         else:
+            # Leave the asr stage's 85-100% window for the polish pass when
+            # it's going to run — one continuous progress sweep either way.
+            transcribe_end = 85 if lyrics_polish else 100
+            asr_audio, asr_progress = resolve_asr_audio(transcribe_end)
             raw_segments, duration_ms = asr.transcribe(
-                audio_path,
+                asr_audio,
                 source_lang,
                 whisper_model,
-                on_progress=lambda pct: emit_fn(
-                    {"id": req_id, "event": "progress", "stage": "asr", "pct": pct}
-                ),
+                on_progress=asr_progress,
                 temperature=whisper_temperature,
                 initial_prompt=initial_prompt,
                 vad_filter=vad_filter,
                 vad_overrides=vad_overrides,
                 compute_type=compute_type,
                 device=device,
+                # Transcribing separated vocals -> the separated-audio VAD
+                # defaults apply (asr._SEPARATED_VAD_PARAMS); explicit
+                # per-request overrides still win inside transcribe.
+                separated=asr_audio == vocals_path,
             )
             source = "asr"
+            if lyrics_polish and raw_segments:
+                # LyricWhiz-style LLM correction of the free transcript
+                # (polish.py). Timing is untouched — only each line's text
+                # can change. `applied` False (no usable provider) keeps
+                # the raw transcript and leaves the doc unmarked.
+                texts = [seg["text"] for seg in raw_segments]
+                new_texts, applied = polish.polish_lines(
+                    texts,
+                    source_lang,
+                    title=video_title,
+                    channel=video_channel,
+                    hint=initial_prompt,
+                    on_progress=asr_pct(85, 100),
+                )
+                if applied:
+                    for seg, new_text in zip(raw_segments, new_texts):
+                        seg["text"] = new_text
+                    polished = True
         emit_fn({"id": req_id, "event": "stage", "stage": "asr", "status": "done"})
 
         cues = [
@@ -329,7 +414,7 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             cue.setdefault("target_text", None)
         pretranslate_doc = assemble.assemble(
             video_id, source_lang, target_lang, duration_ms, cues, False, False, source,
-            target_source=None,
+            target_source=None, polished=polished,
         )
         emit_fn({"id": req_id, "event": "partial_result", "subtitles": pretranslate_doc})
 
@@ -376,7 +461,7 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
         emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "start"})
         doc = assemble.assemble(
             video_id, source_lang, target_lang, duration_ms, cues, do_translate, degraded, source,
-            target_source=target_source,
+            target_source=target_source, polished=polished,
         )
         emit_fn({"id": req_id, "event": "stage", "stage": "assemble", "status": "done"})
 
@@ -516,6 +601,13 @@ def main() -> None:
         "reading requests from stdin.",
     )
     args = parser.parse_args()
+
+    # Reserve the real stdout for protocol.emit and route everything else
+    # (including any third-party library that prints — torch.hub's model-
+    # download banner being the known offender) to stderr. Must happen
+    # before the first request so no stray print can ever corrupt the JSON
+    # machine channel. See protocol.py's module docstring.
+    protocol.claim_stdout_for_logs()
 
     if args.selftest:
         selftest(args.selftest)

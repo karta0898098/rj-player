@@ -76,6 +76,25 @@ impl FsStore {
         self.video_dir(video_id).join("audio.wav")
     }
 
+    /// Path to the Demucs-separated vocals track (16kHz mono, same shape as
+    /// `audio.wav`), written by the AI worker's separate stage when vocal
+    /// separation runs. Doubles as the separation cache: while this file
+    /// exists, regeneration runs skip Demucs entirely. Like `cc_path`,
+    /// always returns the path regardless of whether the file exists.
+    pub fn vocals_path(&self, video_id: &str) -> PathBuf {
+        self.video_dir(video_id).join("vocals.wav")
+    }
+
+    /// Path to the temporary high-quality (44.1kHz stereo) WAV extracted
+    /// from `video.mp4` as Demucs input (`YtDlp::extract_audio_hq`).
+    /// Demucs is trained on 44.1kHz stereo, so feeding it the 16kHz mono
+    /// `audio.wav` would noticeably degrade separation quality. This file
+    /// is transient: the orchestrator deletes it once the pipeline run
+    /// finishes, keeping only `vocals.wav`.
+    pub fn audio_hq_path(&self, video_id: &str) -> PathBuf {
+        self.video_dir(video_id).join("audio_hq.wav")
+    }
+
     /// Path to the normalized manual source-language CC file, if the video
     /// had one (`YtDlp::fetch_captions` writes here at download
     /// time). Mirrors `audio_path`/`video_path` -- always returns the path

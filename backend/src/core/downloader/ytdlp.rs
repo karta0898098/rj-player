@@ -571,6 +571,50 @@ impl YtDlp {
 
         Ok(())
     }
+
+    /// Extract a 44.1kHz stereo WAV from an already-downloaded video, as
+    /// input for Demucs vocal separation. Deliberately separate from
+    /// `extract_audio` (16kHz mono, Whisper's input): Demucs is trained on
+    /// 44.1kHz stereo, so it must see the original-quality track — which
+    /// only survives inside `video.mp4`, there is no high-quality audio
+    /// file on disk otherwise. A 48kHz source (some Opus formats) is
+    /// resampled here; Demucs would resample internally anyway. The output
+    /// is transient (deleted after the pipeline run) — see
+    /// `FsStore::audio_hq_path`.
+    pub async fn extract_audio_hq(
+        &self,
+        video_path: &Path,
+        audio_hq_path: &Path,
+    ) -> Result<(), DownloaderError> {
+        if let Some(parent) = audio_hq_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let output = Command::new(&self.ffmpeg_bin)
+            .hide_console()
+            .args([
+                "-y",
+                "-i",
+                &video_path.to_string_lossy(),
+                "-vn",
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                &audio_hq_path.to_string_lossy(),
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Err(DownloaderError::FfmpegFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 /// After a `--write-subs --sub-langs <lang1>,<lang2>,... --convert-subs srt`

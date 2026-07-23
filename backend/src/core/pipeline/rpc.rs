@@ -100,6 +100,44 @@ pub struct GenerateSubtitlesParams {
     /// of calling the LLM, setting `doc.target_source == "cc"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_cc_path: Option<String>,
+    /// Whether the worker should run Demucs vocal separation before the
+    /// ASR/align stage (the resolved decision — the orchestrator has
+    /// already applied the global `vocal_separation` policy + per-request
+    /// override + `is_music_video`, see
+    /// `orchestrator::effective_separate_vocals`). The worker only acts on
+    /// this in the branches that actually consume audio (free ASR and
+    /// forced alignment); the CC branches ignore it. Separation failure on
+    /// the worker side (deps missing, OOM, …) degrades gracefully back to
+    /// `audio_path` — it never fails the pipeline.
+    pub separate_vocals: bool,
+    /// Where the worker should write (and cache) the separated 16kHz mono
+    /// vocals track (`FsStore::vocals_path`). If this file already exists,
+    /// the worker skips Demucs and uses it directly — the regeneration
+    /// cache. Only meaningful when `separate_vocals` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vocals_path: Option<String>,
+    /// The 44.1kHz stereo Demucs input the orchestrator extracted from
+    /// `video.mp4` (`FsStore::audio_hq_path`). `None` when extraction
+    /// failed or wasn't attempted — the worker then falls back to the
+    /// original `audio_path` unseparated (unless `vocals_path` is already
+    /// cached). Only meaningful when `separate_vocals` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_hq_path: Option<String>,
+    /// Whether the worker should run the LLM lyrics-polish pass on the
+    /// free-ASR transcript (the resolved decision — global `lyrics_polish`
+    /// policy + per-request override + `is_music_video`, resolved by
+    /// `orchestrator::effective_auto_policy`). The worker only acts on it
+    /// in the free-ASR branch; CC/align sources already carry correct text.
+    /// No usable LLM provider degrades to the raw transcript — never a new
+    /// failure mode.
+    pub lyrics_polish: bool,
+    /// The video's title/channel (from `meta.json`), passed as context for
+    /// the polish prompt — a strong hint at WHICH song the LLM is
+    /// proofreading. Omitted when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_channel: Option<String>,
 }
 
 /// Params for the `retranslate` RPC method — re-runs ONLY the translate
@@ -806,6 +844,12 @@ mod tests {
                     reference_lyrics: None,
                     cc_path: None,
                     target_cc_path: None,
+                    separate_vocals: false,
+                    vocals_path: None,
+                    audio_hq_path: None,
+                    lyrics_polish: false,
+                    video_title: None,
+                    video_channel: None,
                 },
                 |event| match event {
                     WorkerProgress::Stage(_) => saw_stage = true,
@@ -852,6 +896,12 @@ mod tests {
                     reference_lyrics: None,
                     cc_path: None,
                     target_cc_path: None,
+                    separate_vocals: false,
+                    vocals_path: None,
+                    audio_hq_path: None,
+                    lyrics_polish: false,
+                    video_title: None,
+                    video_channel: None,
                 },
                 |_event| {},
             )
@@ -902,6 +952,12 @@ mod tests {
             reference_lyrics: None,
             cc_path: None,
             target_cc_path: None,
+            separate_vocals: false,
+            vocals_path: None,
+            audio_hq_path: None,
+            lyrics_polish: false,
+            video_title: None,
+            video_channel: None,
         }
     }
 

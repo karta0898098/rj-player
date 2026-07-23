@@ -14,12 +14,39 @@
 use crate::core::domain::{
     JobEvent, Stage, SubtitleDoc, VideoMeta, VideoStatus, SUBTITLE_DOC_VERSION,
 };
+use crate::core::downloader::YtDlp;
 use crate::core::pipeline::hub::EventHub;
 use crate::core::pipeline::queue::PipelineOverrides;
 use crate::core::pipeline::rpc::{
     GenerateSubtitlesParams, RetranslateParams, RpcClient, RpcError, VadParams, WorkerProgress,
 };
 use crate::core::store::FsStore;
+
+/// Resolve an `auto`/`off`/`always` music-feature policy (Demucs vocal
+/// separation, LLM lyrics polish) into an on/off decision for one run.
+///
+/// Precedence (dsd.md §13.7-style global knob + the per-request "regenerate"
+/// contract):
+///   1. a global policy of `"off"` is a hard kill-switch — even an explicit
+///      per-request `Some(true)` can't turn the feature on (the escape
+///      hatch if the feature misbehaves, and for separation the way to stay
+///      entirely demucs-free: the worker never even imports it);
+///   2. otherwise a per-request override (`Some(_)`) wins;
+///   3. otherwise `"always"` → on, and `"auto"` (or any unrecognized
+///      value) → follow `meta.is_music_video`.
+///
+/// Pure function so the precedence table is directly unit-testable.
+fn effective_auto_policy(
+    policy: &str,
+    request_override: Option<bool>,
+    is_music_video: bool,
+) -> bool {
+    match policy {
+        "off" => false,
+        "always" => request_override.unwrap_or(true),
+        _ => request_override.unwrap_or(is_music_video),
+    }
+}
 
 /// Map a pipeline `Stage` (as reported by the worker) onto the coarser
 /// `VideoStatus` state machine (dsd.md §5.3). The status machine has no
@@ -58,16 +85,25 @@ fn status_for_stage(stage: Stage) -> VideoStatus {
 /// `PipelineOverrides::default()`) falls back to `whisper_model`/
 /// `whisper_temperature` above, or to `ai/pipeline/asr.py`'s own baked-in
 /// defaults for `initial_prompt`/`vad`.
+/// `ytdlp` is only used for its ffmpeg wrapper (`extract_audio_hq`), and only
+/// when vocal separation is actually on for this run; `vocal_separation` and
+/// `lyrics_polish` are the global policy strings
+/// (`Config::live_vocal_separation` / `Config::live_lyrics_polish`) resolved
+/// against the corresponding per-request override + `meta.is_music_video` by
+/// [`effective_auto_policy`].
 #[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     store: &FsStore,
     hub: &EventHub,
     rpc: &RpcClient,
+    ytdlp: &YtDlp,
     video_id: &str,
     whisper_model: &str,
     whisper_temperature: f32,
     compute_type: &str,
     device: &str,
+    vocal_separation: &str,
+    lyrics_polish: &str,
     force: bool,
     overrides: &PipelineOverrides,
 ) {
@@ -199,6 +235,45 @@ pub async fn run_pipeline(
     // -- no more keying off a mismatched CC's language.
     let effective_source_lang = source_lang;
 
+    // ---- Demucs vocal separation (global policy + per-request override) ----
+    // When on, the worker transcribes a separated vocals track instead of the
+    // raw mix. `vocals.wav` doubles as the cache: if a previous run already
+    // separated this video, skip straight to it — no ffmpeg re-extract, no
+    // Demucs re-run. Otherwise extract the 44.1kHz stereo Demucs input from
+    // `video.mp4` here (the only place the original-quality track survives;
+    // `audio.wav` is already downsampled to 16kHz mono). EVERY failure on
+    // this path — video.mp4 gone, ffmpeg error — just logs and falls back to
+    // the unseparated `audio.wav`: separation is a quality enhancer, never a
+    // new way for the pipeline to fail.
+    let vocals_path = store.vocals_path(video_id);
+    let audio_hq_path = store.audio_hq_path(video_id);
+    let mut separate_vocals =
+        effective_auto_policy(vocal_separation, overrides.separate_vocals, meta.is_music_video);
+    let mut audio_hq_for_worker: Option<String> = None;
+    if separate_vocals && !vocals_path.exists() {
+        let video_path = store.video_path(video_id);
+        if !video_path.exists() {
+            tracing::warn!(
+                %video_id,
+                "vocal separation requested but video.mp4 is missing; using the original audio"
+            );
+            separate_vocals = false;
+        } else {
+            match ytdlp.extract_audio_hq(&video_path, &audio_hq_path).await {
+                Ok(()) => {
+                    audio_hq_for_worker = Some(audio_hq_path.to_string_lossy().to_string());
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        %video_id, %err,
+                        "failed to extract 44.1kHz audio for vocal separation (non-fatal); using the original audio"
+                    );
+                    separate_vocals = false;
+                }
+            }
+        }
+    }
+
     let params = GenerateSubtitlesParams {
         video_id: video_id.to_string(),
         audio_path: audio_path.to_string_lossy().to_string(),
@@ -220,6 +295,21 @@ pub async fn run_pipeline(
         reference_lyrics: effective_reference_lyrics,
         cc_path,
         target_cc_path,
+        separate_vocals,
+        vocals_path: if separate_vocals {
+            Some(vocals_path.to_string_lossy().to_string())
+        } else {
+            None
+        },
+        audio_hq_path: audio_hq_for_worker.clone(),
+        lyrics_polish: effective_auto_policy(
+            lyrics_polish,
+            overrides.lyrics_polish,
+            meta.is_music_video,
+        ),
+        // Context for the polish prompt — which song is being proofread.
+        video_title: Some(meta.title.clone()).filter(|t| !t.is_empty()),
+        video_channel: Some(meta.channel.clone()).filter(|c| !c.is_empty()),
     };
 
     // The pre-translate snapshot write below is spawned (the progress
@@ -283,6 +373,17 @@ pub async fn run_pipeline(
         .take();
     if let Some(handle) = pending_snapshot {
         let _ = handle.await;
+    }
+
+    // `audio_hq.wav` is transient Demucs input (~80MB for a 4-minute song);
+    // drop it as soon as the worker is done with it, success or failure —
+    // only `vocals.wav` (the separation cache) is worth keeping. Checked by
+    // existence rather than "did this run extract it" so a leftover from a
+    // crashed earlier run (or a half-written ffmpeg output) gets swept too.
+    if audio_hq_path.exists() {
+        if let Err(err) = tokio::fs::remove_file(&audio_hq_path).await {
+            tracing::warn!(%video_id, %err, "failed to remove transient audio_hq.wav");
+        }
     }
 
     match result {
@@ -539,6 +640,19 @@ mod tests {
             .to_string()
     }
 
+    /// A `YtDlp` whose binaries don't exist. Fine for every test here: its
+    /// only use inside `run_pipeline` is `extract_audio_hq`, which is only
+    /// reached when vocal separation is on for the run — and where a test
+    /// does turn separation on, the nonexistent ffmpeg is exactly the
+    /// failure being exercised (extraction must be non-fatal).
+    fn test_ytdlp() -> YtDlp {
+        YtDlp::new(
+            "rj-player-test-nonexistent-yt-dlp",
+            "rj-player-test-nonexistent-ffmpeg",
+            "best",
+        )
+    }
+
     /// A fresh throwaway data dir under the OS temp dir, cleaned up when the
     /// returned guard drops. Hand-rolled instead of pulling in a `tempfile`
     /// dev-dependency, since this is the only place that needs one.
@@ -581,7 +695,7 @@ mod tests {
 
         seed_video(&store, "abc12345678", VideoStatus::Downloaded).await;
 
-        run_pipeline(&store, &hub, &rpc, "abc12345678", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "abc12345678", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("abc12345678").await.unwrap().unwrap();
@@ -622,11 +736,14 @@ mod tests {
                 &store_for_job,
                 &hub,
                 &rpc,
+                &test_ytdlp(),
                 "slowvideo001",
                 "small",
                 0.0,
                 "int8",
                 "cpu",
+                "auto",
+                "off",
                 false,
                 &PipelineOverrides::default(),
             )
@@ -690,6 +807,7 @@ mod tests {
             translate_partial: Some(true),
             source: Some("asr".to_string()),
             target_source: None,
+            polished: None,
         };
         store.save_subtitles(&existing).await.unwrap();
 
@@ -753,11 +871,14 @@ mod tests {
             &store,
             &hub,
             &rpc,
+            &test_ytdlp(),
             "ccvideo0001",
             "small",
             0.0,
             "int8",
             "cpu",
+            "auto",
+            "off",
             false,
             &PipelineOverrides::default(),
         )
@@ -807,11 +928,14 @@ mod tests {
             &store,
             &hub,
             &rpc,
+            &test_ytdlp(),
             "mismatchcc1",
             "small",
             0.0,
             "int8",
             "cpu",
+            "auto",
+            "off",
             false,
             &PipelineOverrides::default(),
         )
@@ -856,11 +980,14 @@ mod tests {
             &store,
             &hub,
             &rpc,
+            &test_ytdlp(),
             "targetcc001",
             "small",
             0.0,
             "int8",
             "cpu",
+            "auto",
+            "off",
             false,
             &PipelineOverrides::default(),
         )
@@ -876,6 +1003,143 @@ mod tests {
             .unwrap()
             .expect("subtitles.json should have been written");
         assert_eq!(doc.target_source.as_deref(), Some("cc"));
+    }
+
+    /// The full [`effective_separate_vocals`] precedence table: `"off"` is a
+    /// hard kill-switch beating even an explicit `Some(true)`; otherwise the
+    /// per-request override wins; otherwise `"always"` → on and `"auto"`
+    /// (or anything unrecognized) → follow `is_music_video`.
+    #[test]
+    fn effective_separate_vocals_precedence() {
+        assert!(!effective_auto_policy("off", Some(true), true));
+        assert!(!effective_auto_policy("off", None, true));
+
+        assert!(effective_auto_policy("auto", Some(true), false));
+        assert!(!effective_auto_policy("auto", Some(false), true));
+        assert!(!effective_auto_policy("always", Some(false), true));
+
+        assert!(effective_auto_policy("auto", None, true));
+        assert!(!effective_auto_policy("auto", None, false));
+        assert!(effective_auto_policy("always", None, false));
+
+        assert!(effective_auto_policy("banana", None, true));
+        assert!(!effective_auto_policy("banana", None, false));
+    }
+
+    /// A music video under the `"auto"` policy asks for separation, but the
+    /// hq-audio extraction fails (`test_ytdlp`'s ffmpeg doesn't exist).
+    /// That must be non-fatal: the run falls back to the original audio
+    /// (worker sees `separate_vocals: false` — doc.source stays `"asr"`,
+    /// not the stub's `"asr_vocals"` tag) and still completes.
+    #[tokio::test]
+    async fn failed_hq_extraction_is_nonfatal_and_falls_back_to_original_audio() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "musicvid0001", VideoStatus::Downloaded).await;
+        let mut meta = store.load_meta("musicvid0001").await.unwrap().unwrap();
+        meta.is_music_video = true;
+        store.save_meta(&meta).await.unwrap();
+        // video.mp4 exists, so run_pipeline attempts the extraction (and
+        // fails on the nonexistent ffmpeg binary).
+        tokio::fs::write(store.video_path("musicvid0001"), b"fake mp4 bytes")
+            .await
+            .unwrap();
+
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0001", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+            .await;
+
+        let meta = store.load_meta("musicvid0001").await.unwrap().unwrap();
+        assert_eq!(meta.status, VideoStatus::Ready);
+        assert_eq!(meta.last_error, None);
+        let doc = store.load_subtitles("musicvid0001").await.unwrap().unwrap();
+        assert_ne!(doc.source.as_deref(), Some("asr_vocals"));
+        assert!(!store.audio_hq_path("musicvid0001").exists());
+    }
+
+    /// With a cached `vocals.wav` already on disk, a music video under
+    /// `"auto"` keeps separation ON without needing any extraction (no
+    /// ffmpeg call — `test_ytdlp`'s ffmpeg would fail), and
+    /// `separate_vocals: true` threads through to the worker (the stub tags
+    /// the doc `source: "asr_vocals"` when it sees the flag).
+    #[tokio::test]
+    async fn cached_vocals_keep_separation_on_without_extraction() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "musicvid0002", VideoStatus::Downloaded).await;
+        let mut meta = store.load_meta("musicvid0002").await.unwrap().unwrap();
+        meta.is_music_video = true;
+        store.save_meta(&meta).await.unwrap();
+        tokio::fs::write(store.vocals_path("musicvid0002"), b"fake cached vocals")
+            .await
+            .unwrap();
+
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0002", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
+            .await;
+
+        let meta = store.load_meta("musicvid0002").await.unwrap().unwrap();
+        assert_eq!(meta.status, VideoStatus::Ready);
+        let doc = store.load_subtitles("musicvid0002").await.unwrap().unwrap();
+        assert_eq!(doc.source.as_deref(), Some("asr_vocals"));
+    }
+
+    /// A music video under the `"auto"` lyrics-polish policy must thread
+    /// `lyrics_polish: true` to the worker (the stub tags the doc
+    /// `polished: true` when it sees the flag), and the field must
+    /// round-trip into the saved `subtitles.json`.
+    #[tokio::test]
+    async fn lyrics_polish_flag_threads_through_and_marks_doc_polished() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "polishvid001", VideoStatus::Downloaded).await;
+        let mut meta = store.load_meta("polishvid001").await.unwrap().unwrap();
+        meta.is_music_video = true;
+        store.save_meta(&meta).await.unwrap();
+
+        // vocal_separation "off" so no extraction is attempted; polish "auto"
+        // follows is_music_video -> on.
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "polishvid001", "small", 0.0, "int8", "cpu", "off", "auto", false, &PipelineOverrides::default())
+            .await;
+
+        let doc = store.load_subtitles("polishvid001").await.unwrap().unwrap();
+        assert_eq!(doc.polished, Some(true));
+    }
+
+    /// The global `"off"` policy is a hard kill-switch: even a cached
+    /// vocals.wav + `is_music_video` + an explicit per-request `Some(true)`
+    /// must not turn separation on.
+    #[tokio::test]
+    async fn global_off_policy_defeats_per_request_override() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "musicvid0003", VideoStatus::Downloaded).await;
+        let mut meta = store.load_meta("musicvid0003").await.unwrap().unwrap();
+        meta.is_music_video = true;
+        store.save_meta(&meta).await.unwrap();
+        tokio::fs::write(store.vocals_path("musicvid0003"), b"fake cached vocals")
+            .await
+            .unwrap();
+
+        let overrides = PipelineOverrides {
+            separate_vocals: Some(true),
+            ..PipelineOverrides::default()
+        };
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "musicvid0003", "small", 0.0, "int8", "cpu", "off", "off", false, &overrides)
+            .await;
+
+        let doc = store.load_subtitles("musicvid0003").await.unwrap().unwrap();
+        assert_ne!(doc.source.as_deref(), Some("asr_vocals"));
     }
 
     #[tokio::test]
@@ -899,10 +1163,11 @@ mod tests {
             translate_partial: None,
             source: None,
             target_source: None,
+            polished: None,
         };
         store.save_subtitles(&doc).await.unwrap();
 
-        run_pipeline(&store, &hub, &rpc, "cachedvideo1", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "cachedvideo1", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("cachedvideo1").await.unwrap().unwrap();
@@ -925,7 +1190,7 @@ mod tests {
         // the assertions below additionally confirm the *specific*
         // failure-isolation contract (dsd.md §7): status flips to
         // pipeline_failed with a recorded error, nothing left half-written.
-        run_pipeline(&store, &hub, &rpc, "crashvideo01", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "crashvideo01", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("crashvideo01").await.unwrap().unwrap();
@@ -956,7 +1221,7 @@ mod tests {
         meta.status = VideoStatus::Downloaded;
         store.save_meta(&meta).await.unwrap();
 
-        run_pipeline(&store, &hub, &rpc, "noaudiovid1", "small", 0.0, "int8", "cpu", false, &PipelineOverrides::default())
+        run_pipeline(&store, &hub, &rpc, &test_ytdlp(), "noaudiovid1", "small", 0.0, "int8", "cpu", "auto", "off", false, &PipelineOverrides::default())
             .await;
 
         let meta = store.load_meta("noaudiovid1").await.unwrap().unwrap();
@@ -987,11 +1252,14 @@ mod tests {
             &store,
             &hub,
             &rpc,
+            &test_ytdlp(),
             "englishvid1",
             "small",
             0.0,
             "int8",
             "cpu",
+            "auto",
+            "off",
             false,
             &PipelineOverrides::default(),
         )

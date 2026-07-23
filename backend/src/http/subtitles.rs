@@ -79,6 +79,16 @@ pub struct PipelineRequest {
     /// usual".
     #[serde(default)]
     pub reference_lyrics: Option<String>,
+    /// Per-request Demucs vocal-separation override: omitted -> follow the
+    /// global `vocal_separation` policy ("auto" = separate iff the video is
+    /// flagged as a music video); `true`/`false` -> force on/off for this
+    /// run. A global policy of `"off"` wins over `true` (hard kill-switch).
+    #[serde(default)]
+    pub separate_vocals: Option<bool>,
+    /// Per-request LLM lyrics-polish override — same tri-state semantics as
+    /// `separate_vocals` above.
+    #[serde(default)]
+    pub lyrics_polish: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +126,8 @@ pub async fn trigger_pipeline(
         initial_prompt,
         vad,
         reference_lyrics,
+        separate_vocals,
+        lyrics_polish,
     } = body.map(|Json(req)| req).unwrap_or_default();
 
     // Flip status to `transcribing` SYNCHRONOUSLY, before returning 202 and
@@ -143,6 +155,8 @@ pub async fn trigger_pipeline(
         initial_prompt,
         vad,
         reference_lyrics,
+        separate_vocals,
+        lyrics_polish,
     };
 
     state

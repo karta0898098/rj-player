@@ -108,6 +108,18 @@ pub async fn run(config: &Config) -> DoctorReport {
         checks.push(cuda_check(managed_venv.as_deref(), deps_ok).await);
     }
 
+    // 2c. Demucs vocal-separation deps — only when the feature isn't globally
+    //     off (`[ai] vocal_separation`, dsd.md §13.7-style knob). OPTIONAL
+    //     (`required: false`): without demucs the pipeline still produces
+    //     subtitles (ai/pipeline/separate.py degrades to the original
+    //     audio), so a missing install must never flip `ready` to false —
+    //     same contract as the llm_key check. Skipped entirely for "off" so
+    //     opted-out users never see it. Like `install_cuda_deps`, the fix
+    //     only surfaces once `ai_deps` exists to install into.
+    if config.live_vocal_separation() != "off" {
+        checks.push(demucs_check(managed_venv.as_deref(), deps_ok));
+    }
+
     // 3/4. Bundled tools actually run? (No user `fix` — a missing sidecar is a
     //      packaging bug, not something the user installs.) Run concurrently:
     //      each already retries internally, so sequencing them would double
@@ -163,6 +175,28 @@ fn nonempty(opt: &Option<String>) -> bool {
 /// The sentinel `fix_install_cuda_deps` writes after the NVIDIA wheels land
 /// (same pattern as `install_deps`' `.rj-deps-ok`).
 const CUDA_DEPS_SENTINEL: &str = ".rj-cuda-deps-ok";
+
+/// The sentinel `fix_install_demucs_deps` writes after the Demucs wheels
+/// land (same pattern as `CUDA_DEPS_SENTINEL`).
+const DEMUCS_DEPS_SENTINEL: &str = ".rj-demucs-deps-ok";
+
+/// The `demucs_deps` check for vocal_separation != off: are the optional
+/// Demucs wheels (ai/requirements-demucs.txt) installed into the managed
+/// venv? Cheap sentinel-file test, mirroring `cuda_check`'s first layer —
+/// no runtime probe needed, because a broken install degrades gracefully at
+/// pipeline time anyway (separate.py falls back to the original audio).
+fn demucs_check(venv: Option<&std::path::Path>, deps_ok: bool) -> DoctorCheck {
+    let demucs_ok = venv.is_some_and(|v| v.join(DEMUCS_DEPS_SENTINEL).is_file());
+    DoctorCheck {
+        id: "demucs_deps",
+        label: "人聲分離 (Demucs)".into(),
+        status: if demucs_ok { CheckStatus::Ok } else { CheckStatus::Missing },
+        required: false,
+        fix: (!demucs_ok && deps_ok).then_some("install_demucs_deps"),
+        detail: (!demucs_ok)
+            .then(|| "未安裝；可略過，屆時將直接以原始音訊辨識（品質較差）".into()),
+    }
+}
 
 /// The `cuda_runtime` check for device=cuda: NVIDIA wheels installed, and a
 /// GPU actually visible. `deps_ok` gates the fix — installing CUDA wheels
@@ -540,7 +574,11 @@ impl DoctorHub {
 pub fn is_known_fix(id: &str) -> bool {
     matches!(
         id,
-        "install_runtime" | "install_deps" | "install_cuda_deps" | "download_model"
+        "install_runtime"
+            | "install_deps"
+            | "install_cuda_deps"
+            | "install_demucs_deps"
+            | "download_model"
     )
 }
 
@@ -556,6 +594,7 @@ pub fn start_fix(hub: Arc<DoctorHub>, config: Arc<Config>, fix: String) -> bool 
             "install_runtime" => fix_install_runtime(&hub, &config).await,
             "install_deps" => fix_install_deps(&hub, &config).await,
             "install_cuda_deps" => fix_install_cuda_deps(&hub, &config).await,
+            "install_demucs_deps" => fix_install_demucs_deps(&hub, &config).await,
             "download_model" => fix_download_model(&hub, &config).await,
             _ => Err("unknown fix".to_string()),
         };
@@ -626,6 +665,30 @@ async fn fix_install_cuda_deps(hub: &DoctorHub, config: &Config) -> Result<(), S
 
     std::fs::write(venv.join(CUDA_DEPS_SENTINEL), b"")
         .map_err(|e| format!("installed CUDA deps but couldn't write completion marker: {e}"))?;
+    Ok(())
+}
+
+/// Install the optional Demucs vocal-separation wheels into the managed
+/// venv, then write the `.rj-demucs-deps-ok` sentinel `demucs_check` looks
+/// for. Kept out of the main `requirements.txt` so installs that never
+/// separate vocals don't pay for torchaudio + demucs (same contract as
+/// `fix_install_cuda_deps`). The htdemucs model weights themselves (~80MB)
+/// download into the torch hub cache on first actual separation.
+async fn fix_install_demucs_deps(hub: &DoctorHub, config: &Config) -> Result<(), String> {
+    let uv = uv_path(config)?;
+    let venv = managed_venv()?;
+    let requirements = ai_dir(config).join("requirements-demucs.txt");
+
+    let mut pip = Command::new(&uv);
+    pip.hide_console()
+        .args(["pip", "install", "--python"])
+        .arg(&venv)
+        .arg("-r")
+        .arg(&requirements);
+    run_streaming(hub, "install_demucs_deps", pip).await?;
+
+    std::fs::write(venv.join(DEMUCS_DEPS_SENTINEL), b"")
+        .map_err(|e| format!("installed demucs deps but couldn't write completion marker: {e}"))?;
     Ok(())
 }
 

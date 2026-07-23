@@ -132,6 +132,14 @@ export const GENERATION_SETTINGS_DEFAULTS = {
   vadMinSilenceMs: 400,
   vadSpeechPadMs: 200,
   vadMaxSpeechS: 15,
+  // Demucs vocal-separation override: 'default' (follow the global 人聲分離
+  // policy) | 'on' | 'off'. Tri-state as a string, not a boolean — 'default'
+  // must serialize to "omit the field entirely" (see
+  // buildGenerationSettingsPayload) so the backend falls through to
+  // `Config::live_vocal_separation` + `is_music_video`.
+  separateVocals: 'default',
+  // LLM lyrics-polish override: same tri-state contract as separateVocals.
+  lyricsPolish: 'default',
 };
 
 // The VAD loosening applied when a video is a music MV: sung phrases have
@@ -214,13 +222,41 @@ export function buildGenerationSettingsPayload(settings) {
     whisper_temperature: settings.whisperTemperature,
     initial_prompt: settings.initialPrompt,
     reference_lyrics: settings.referenceLyrics,
+    // VAD knobs are sent ONLY when the user actually changed them from the
+    // defaults. An untouched knob is omitted so the worker's own default
+    // set applies — which matters because the worker now picks DIFFERENT
+    // defaults for Demucs-separated audio (asr.py's _SEPARATED_VAD_PARAMS);
+    // always sending a mirror of the unseparated defaults would silently
+    // pin every run to the wrong set. `enabled` is still always sent: the
+    // UI's default (off) deliberately differs from the worker's (on), so
+    // omitting it would flip behavior.
     vad: {
       enabled: settings.vadEnabled,
-      threshold: settings.vadThreshold,
-      min_silence_duration_ms: settings.vadMinSilenceMs,
-      speech_pad_ms: settings.vadSpeechPadMs,
-      max_speech_duration_s: settings.vadMaxSpeechS,
+      ...(settings.vadThreshold !== GENERATION_SETTINGS_DEFAULTS.vadThreshold
+        ? { threshold: settings.vadThreshold }
+        : {}),
+      ...(settings.vadMinSilenceMs !== GENERATION_SETTINGS_DEFAULTS.vadMinSilenceMs
+        ? { min_silence_duration_ms: settings.vadMinSilenceMs }
+        : {}),
+      ...(settings.vadSpeechPadMs !== GENERATION_SETTINGS_DEFAULTS.vadSpeechPadMs
+        ? { speech_pad_ms: settings.vadSpeechPadMs }
+        : {}),
+      ...(settings.vadMaxSpeechS !== GENERATION_SETTINGS_DEFAULTS.vadMaxSpeechS
+        ? { max_speech_duration_s: settings.vadMaxSpeechS }
+        : {}),
     },
+    // 'default' omits the key entirely (backend `Option<bool>` stays None →
+    // global policy decides); 'on'/'off' force it for this run.
+    ...(settings.separateVocals === 'on'
+      ? { separate_vocals: true }
+      : settings.separateVocals === 'off'
+        ? { separate_vocals: false }
+        : {}),
+    ...(settings.lyricsPolish === 'on'
+      ? { lyrics_polish: true }
+      : settings.lyricsPolish === 'off'
+        ? { lyrics_polish: false }
+        : {}),
   };
 }
 

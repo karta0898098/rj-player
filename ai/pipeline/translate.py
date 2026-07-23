@@ -42,15 +42,32 @@ SOURCE_LANG_NAMES = {"ja": "Japanese", "en": "English"}
 
 
 class Translator(ABC):
-    """Provider-agnostic batch translator. dsd.md §4.3."""
+    """Provider-agnostic batch LLM caller. dsd.md §4.3.
+
+    The provider-specific part is `complete_lines` — "send one prompt, get
+    back a JSON array of exactly N strings, with retries". `translate_batch`
+    is just `complete_lines` over the translate prompt, and other line-wise
+    LLM stages (ai/pipeline/polish.py's lyrics correction) reuse
+    `complete_lines` with their own prompt instead of duplicating three
+    providers' worth of client/retry/parse code.
+    """
 
     @abstractmethod
+    def complete_lines(self, prompt: str, expected_count: int) -> list[str]:
+        """Send `prompt`, expecting a JSON array of exactly `expected_count`
+        strings back. Retries internally; raises on (final) failure — the
+        caller handles degradation.
+        """
+        raise NotImplementedError
+
     def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
         """Translate texts -> target_lang, preserving order/length exactly.
 
         Raises on failure (caller handles retry/degradation).
         """
-        raise NotImplementedError
+        if not texts:
+            return []
+        return self.complete_lines(_build_prompt(texts, target_lang, source_lang), len(texts))
 
 
 class AnthropicTranslator(Translator):
@@ -62,11 +79,7 @@ class AnthropicTranslator(Translator):
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
 
-    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
-        if not texts:
-            return []
-
-        prompt = _build_prompt(texts, target_lang, source_lang)
+    def complete_lines(self, prompt: str, expected_count: int) -> list[str]:
         last_err: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES):
@@ -79,13 +92,13 @@ class AnthropicTranslator(Translator):
                 text = "".join(
                     block.text for block in resp.content if getattr(block, "type", None) == "text"
                 )
-                translations = _parse_json_array(text)
-                if len(translations) != len(texts):
+                lines = _parse_json_array(text)
+                if len(lines) != expected_count:
                     raise ValueError(
-                        f"translation count mismatch: got {len(translations)}, "
-                        f"expected {len(texts)}"
+                        f"line count mismatch: got {len(lines)}, "
+                        f"expected {expected_count}"
                     )
-                return translations
+                return lines
             except Exception as e:  # noqa: BLE001 - deliberately broad, see retry loop
                 last_err = e
                 if attempt < MAX_RETRIES - 1:
@@ -109,13 +122,9 @@ class GeminiTranslator(Translator):
         self._client = genai.Client(api_key=api_key)
         self._model = model
 
-    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
-        if not texts:
-            return []
-
+    def complete_lines(self, prompt: str, expected_count: int) -> list[str]:
         from google.genai import types
 
-        prompt = _build_prompt(texts, target_lang, source_lang)
         last_err: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES):
@@ -153,13 +162,13 @@ class GeminiTranslator(Translator):
                     except Exception:  # noqa: BLE001 - best-effort diagnostics only
                         pass
                     raise ValueError(f"Gemini returned no text (finish_reason={reason})")
-                translations = _parse_json_array(raw_text)
-                if len(translations) != len(texts):
+                lines = _parse_json_array(raw_text)
+                if len(lines) != expected_count:
                     raise ValueError(
-                        f"translation count mismatch: got {len(translations)}, "
-                        f"expected {len(texts)}"
+                        f"line count mismatch: got {len(lines)}, "
+                        f"expected {expected_count}"
                     )
-                return translations
+                return lines
             except Exception as e:  # noqa: BLE001 - deliberately broad, see retry loop
                 last_err = e
                 if attempt < MAX_RETRIES - 1:
@@ -182,19 +191,15 @@ class OpenAITranslator(Translator):
         self._client = OpenAI(api_key=api_key)
         self._model = model
 
-    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str) -> list[str]:
-        if not texts:
-            return []
-
-        prompt = _build_prompt(texts, target_lang, source_lang)
+    def complete_lines(self, prompt: str, expected_count: int) -> list[str]:
         # OpenAI structured outputs require an object root, so wrap the array
-        # under `translations` and unwrap after parsing.
+        # under `lines` and unwrap after parsing.
         schema = {
             "type": "object",
             "properties": {
-                "translations": {"type": "array", "items": {"type": "string"}}
+                "lines": {"type": "array", "items": {"type": "string"}}
             },
-            "required": ["translations"],
+            "required": ["lines"],
             "additionalProperties": False,
         }
         last_err: Optional[Exception] = None
@@ -208,7 +213,7 @@ class OpenAITranslator(Translator):
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
-                            "name": "translations",
+                            "name": "lines",
                             "schema": schema,
                             "strict": True,
                         },
@@ -216,13 +221,13 @@ class OpenAITranslator(Translator):
                 )
                 content = resp.choices[0].message.content or ""
                 data = json.loads(content)
-                translations = [str(x) for x in data.get("translations", [])]
-                if len(translations) != len(texts):
+                lines = [str(x) for x in data.get("lines", [])]
+                if len(lines) != expected_count:
                     raise ValueError(
-                        f"translation count mismatch: got {len(translations)}, "
-                        f"expected {len(texts)}"
+                        f"line count mismatch: got {len(lines)}, "
+                        f"expected {expected_count}"
                     )
-                return translations
+                return lines
             except Exception as e:  # noqa: BLE001 - deliberately broad, see retry loop
                 last_err = e
                 if attempt < MAX_RETRIES - 1:

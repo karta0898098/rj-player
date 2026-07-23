@@ -223,6 +223,8 @@ export default function App() {
   const [vadMinSilenceMs, setVadMinSilenceMs] = useState(() => loadGenerationSettings().vadMinSilenceMs);
   const [vadSpeechPadMs, setVadSpeechPadMs] = useState(() => loadGenerationSettings().vadSpeechPadMs);
   const [vadMaxSpeechS, setVadMaxSpeechS] = useState(() => loadGenerationSettings().vadMaxSpeechS);
+  const [separateVocals, setSeparateVocals] = useState(() => loadGenerationSettings().separateVocals);
+  const [lyricsPolish, setLyricsPolish] = useState(() => loadGenerationSettings().lyricsPolish);
 
   // ---- settings popover ---------------------------------------------------
   const [showSettings, setShowSettings] = useState(false);
@@ -518,8 +520,10 @@ export default function App() {
       vadMinSilenceMs,
       vadSpeechPadMs,
       vadMaxSpeechS,
+      separateVocals,
+      lyricsPolish,
     });
-  }, [whisperModel, whisperTemperature, initialPrompt, referenceLyrics, vadEnabled, vadThreshold, vadMinSilenceMs, vadSpeechPadMs, vadMaxSpeechS]);
+  }, [whisperModel, whisperTemperature, initialPrompt, referenceLyrics, vadEnabled, vadThreshold, vadMinSilenceMs, vadSpeechPadMs, vadMaxSpeechS, separateVocals, lyricsPolish]);
 
   // "回復預設" — restores the backend's own defaults (GENERATION_SETTINGS_DEFAULTS).
   function resetGenerationSettings() {
@@ -532,6 +536,8 @@ export default function App() {
     setVadMinSilenceMs(GENERATION_SETTINGS_DEFAULTS.vadMinSilenceMs);
     setVadSpeechPadMs(GENERATION_SETTINGS_DEFAULTS.vadSpeechPadMs);
     setVadMaxSpeechS(GENERATION_SETTINGS_DEFAULTS.vadMaxSpeechS);
+    setSeparateVocals(GENERATION_SETTINGS_DEFAULTS.separateVocals);
+    setLyricsPolish(GENERATION_SETTINGS_DEFAULTS.lyricsPolish);
   }
 
   // close settings popover on outside click
@@ -802,6 +808,8 @@ export default function App() {
         vadMinSilenceMs,
         vadSpeechPadMs,
         vadMaxSpeechS,
+        separateVocals,
+        lyricsPolish,
       });
       await regeneratePipeline(videoId, settings);
       connectEvents(videoId);
@@ -1303,6 +1311,10 @@ export default function App() {
           onVadSpeechPadMsChange={setVadSpeechPadMs}
           vadMaxSpeechS={vadMaxSpeechS}
           onVadMaxSpeechSChange={setVadMaxSpeechS}
+          separateVocals={separateVocals}
+          onSeparateVocalsChange={setSeparateVocals}
+          lyricsPolish={lyricsPolish}
+          onLyricsPolishChange={setLyricsPolish}
           onResetGenerationSettings={resetGenerationSettings}
           onRegenerateSubtitles={regenerateSubtitles}
           regenerateDisabled={!videoId || PIPELINE_ACTIVE_STATUSES.has(subtitleStatus)}
@@ -1447,6 +1459,10 @@ export default function App() {
               onVadMinSilenceMsChange={(v) => updateQueueDraft({ vadMinSilenceMs: v })}
               vadSpeechPadMs={queueDraft.vadSpeechPadMs}
               onVadSpeechPadMsChange={(v) => updateQueueDraft({ vadSpeechPadMs: v })}
+              separateVocals={queueDraft.separateVocals}
+              onSeparateVocalsChange={(v) => updateQueueDraft({ separateVocals: v })}
+              lyricsPolish={queueDraft.lyricsPolish}
+              onLyricsPolishChange={(v) => updateQueueDraft({ lyricsPolish: v })}
               vadMaxSpeechS={queueDraft.vadMaxSpeechS}
               onVadMaxSpeechSChange={(v) => updateQueueDraft({ vadMaxSpeechS: v })}
               isMusicVideo={queueDraft.isMusicVideo}

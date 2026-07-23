@@ -96,6 +96,19 @@ def main():
             target_source_kwargs = (
                 {"target_source": "cc"} if params.get("target_cc_path") else {}
             )
+            # Same trick for Demucs vocal separation: when the caller set
+            # `separate_vocals: true`, tag the doc `source: "asr_vocals"` so
+            # an orchestrator test can assert the flag threaded through.
+            # Absent entirely otherwise, so every existing test (which never
+            # sets it) is unaffected.
+            source_kwargs = (
+                {"source": "asr_vocals"} if params.get("separate_vocals") else {}
+            )
+            # And for the LLM lyrics-polish flag: tag the doc `polished: true`
+            # when the caller set `lyrics_polish` so an orchestrator test can
+            # assert the flag + doc field thread through end to end.
+            if params.get("lyrics_polish"):
+                source_kwargs = {**source_kwargs, "polished": True}
 
             emit({"id": req_id, "event": "stage", "stage": "asr", "status": "start"})
             emit({"id": req_id, "event": "progress", "stage": "asr", "pct": 50})
@@ -112,6 +125,7 @@ def main():
                         "duration_ms": 2500,
                         "cues": [{**cue, "target_text": None}],
                         **target_source_kwargs,
+                        **source_kwargs,
                     },
                 })
                 time.sleep(0.2)
@@ -128,6 +142,7 @@ def main():
                     "duration_ms": 2500,
                     "cues": [{**cue, "target_text": "你好"}],
                     **target_source_kwargs,
+                    **source_kwargs,
                 },
             })
             continue

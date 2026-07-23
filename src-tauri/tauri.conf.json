@@ -23,6 +23,7 @@
       "../ai/worker.py": "ai/worker.py",
       "../ai/requirements.txt": "ai/requirements.txt",
       "../ai/requirements-cuda.txt": "ai/requirements-cuda.txt",
+      "../ai/requirements-demucs.txt": "ai/requirements-demucs.txt",
       "../ai/pipeline": "ai/pipeline"
     },
     "icon": [

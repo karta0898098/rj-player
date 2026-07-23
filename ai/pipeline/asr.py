@@ -37,6 +37,35 @@ _DEFAULT_VAD_PARAMS: dict[str, float | int] = dict(
     max_speech_duration_s=15,
 )
 
+# VAD knobs for Demucs-SEPARATED vocals (`transcribe(separated=True)`). The
+# tuned defaults above are compromises for singing buried under
+# instrumentals; a separated vocals track behaves much closer to clean
+# speech, so two of them can relax:
+#   - threshold back to Silero's standard 0.5: quiet singing is no longer
+#     masked by music, so the 0.45 "recover quiet sung content" discount
+#     isn't needed (and 0.5 rejects separation artifacts/bleed better);
+#   - max_speech_duration_s 15 -> 30: the 15s hard cap existed to stop
+#     continuous MUSIC being merged into one giant "speech" region; with the
+#     instrumental stripped, a long "speech" region is actual continuous
+#     singing, so the cap only needs to bound cue length, not fight music.
+# min_silence/speech_pad keep the tuned values -- pauses between sung
+# phrases and soft line onsets exist in the vocals track all the same.
+_SEPARATED_VAD_PARAMS: dict[str, float | int] = dict(
+    threshold=0.5,
+    min_silence_duration_ms=400,
+    speech_pad_ms=200,
+    max_speech_duration_s=30,
+)
+
+
+def vad_defaults(separated: bool) -> dict[str, float | int]:
+    """The VAD defaults for this run, as a fresh copy safe to mutate.
+
+    Pure function of `separated` so the default-selection logic is directly
+    unit-testable without loading any model.
+    """
+    return dict(_SEPARATED_VAD_PARAMS if separated else _DEFAULT_VAD_PARAMS)
+
 
 class Segment(TypedDict):
     start_ms: int
@@ -108,6 +137,7 @@ def transcribe(
     vad_overrides: Optional[dict] = None,
     compute_type: str = "int8",
     device: str = "cpu",
+    separated: bool = False,
 ) -> tuple[list[Segment], int]:
     """Run ASR on audio_path. Returns (segments, duration_ms).
 
@@ -131,10 +161,16 @@ def transcribe(
     `speech_pad_ms`, `max_speech_duration_s`). Only keys present (and
     non-`None`) override the corresponding default; anything omitted keeps
     the tuned default below.
+
+    `separated` means `audio_path` is a Demucs-separated vocals track rather
+    than the raw mix; it selects the `_SEPARATED_VAD_PARAMS` defaults (see
+    that constant for the reasoning). Explicit `vad_overrides` still win
+    either way -- the frontend only sends knobs the user actually changed,
+    so an untouched knob correctly falls through to the right default set.
     """
     model = _get_model(model_size, compute_type, device)
 
-    vad_parameters = dict(_DEFAULT_VAD_PARAMS)
+    vad_parameters = vad_defaults(separated)
     if vad_overrides:
         for key, value in vad_overrides.items():
             if key in vad_parameters and value is not None:

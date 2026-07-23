@@ -84,4 +84,11 @@ pub struct SubtitleDoc {
     /// Additive, just like `source` above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_source: Option<String>,
+    /// True when the free-ASR transcript was corrected by the LLM
+    /// lyrics-polish pass (`ai/pipeline/polish.py`) — the source text is
+    /// then LLM-corrected rather than verbatim what Whisper heard. Absent
+    /// when polish didn't run (CC/align sources, policy off, or no usable
+    /// LLM provider). Additive, just like `source` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polished: Option<bool>,
 }

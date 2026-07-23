@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ACCENT } from '../theme.js';
 import { getCachedModels, deleteCachedModel, clearCachedModels, getStorageInfo, getDoctor, startDoctorFix } from '../api.js';
-import { getSettings, setComputeType, setDevice, getPlatform, revealInFinder } from '../tauri.js';
+import { getSettings, setComputeType, setDevice, setVocalSeparation, setLyricsPolish, getPlatform, revealInFinder } from '../tauri.js';
 import ConfirmDialog from './ConfirmDialog.jsx';
 import CustomSelect from './CustomSelect.jsx';
 
@@ -17,6 +17,23 @@ const COMPUTE_TYPES = [
 const DEVICE_OPTIONS = [
   { value: 'cpu', label: 'cpu（預設）' },
   { value: 'cuda', label: 'cuda（NVIDIA GPU 加速）' },
+];
+
+// Demucs vocal-separation policy (backend `[ai] vocal_separation`): "off" is
+// a global hard kill-switch — even the per-video regenerate options can't
+// turn separation on while it's set.
+const VOCAL_SEPARATION_OPTIONS = [
+  { value: 'auto', label: '自動（僅音樂影片，建議）' },
+  { value: 'off', label: '關閉（全域停用）' },
+  { value: 'always', label: '一律執行' },
+];
+
+// LLM lyrics-polish policy (backend `[ai] lyrics_polish`) — same tri-state
+// semantics as VOCAL_SEPARATION_OPTIONS.
+const LYRICS_POLISH_OPTIONS = [
+  { value: 'auto', label: '自動（僅音樂影片，建議）' },
+  { value: 'off', label: '關閉（全域停用）' },
+  { value: 'always', label: '一律執行' },
 ];
 
 const NAV_DEFS = [
@@ -54,6 +71,17 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
   const [device, setDeviceState] = useState('cpu');
   const [savingCompute, setSavingCompute] = useState(false);
   const [savingDevice, setSavingDevice] = useState(false);
+  const [vocalSeparation, setVocalSeparationState] = useState('auto');
+  const [savingVocalSeparation, setSavingVocalSeparation] = useState(false);
+  const [lyricsPolish, setLyricsPolishState] = useState('auto');
+  const [savingLyricsPolish, setSavingLyricsPolish] = useState(false);
+  // Demucs deps status shown under the vocal-separation row when the policy
+  // isn't 'off' — same state machine as cudaState, plus 'missing' (deps
+  // absent but installable on demand; separation is optional so this is a
+  // neutral hint, not an error):
+  // null | {phase:'checking'} | {phase:'installing', line} | {phase:'ok'}
+  // | {phase:'missing', message} | {phase:'error', message}
+  const [demucsState, setDemucsState] = useState(null);
   const [platform, setPlatform] = useState('web'); // 'macos' | 'windows' | 'web'
   // CUDA environment status shown under the device row when device=cuda:
   // null | {phase:'checking'} | {phase:'installing', line} | {phase:'ok'}
@@ -110,6 +138,13 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
         if (settings) {
           setComputeTypeState(settings.compute_type);
           setDeviceState(settings.device);
+          if (settings.vocal_separation) setVocalSeparationState(settings.vocal_separation);
+          if (settings.lyrics_polish) setLyricsPolishState(settings.lyrics_polish);
+          // Surface the Demucs deps status without kicking off any install
+          // (the backend omits the check entirely when the policy is off).
+          if (settings.vocal_separation !== 'off') {
+            checkDemucsDeps({ autoInstall: false });
+          }
           // Already on cuda? Surface the environment status (cached backend-
           // side after the first success) without kicking off any install.
           if (settings.device === 'cuda' && (await getPlatform()) === 'windows') {
@@ -169,6 +204,26 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
     }
   }
 
+  async function handleVocalSeparationChange(value) {
+    setSavingVocalSeparation(true);
+    setError('');
+    try {
+      await setVocalSeparation(value);
+      setVocalSeparationState(value);
+      if (value === 'off') {
+        setDemucsState(null);
+      } else {
+        // Fire-and-forget: the status row below the select tracks progress
+        // (mirrors handleDeviceChange's cuda auto-install).
+        checkDemucsDeps({ autoInstall: true });
+      }
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally {
+      setSavingVocalSeparation(false);
+    }
+  }
+
   // Ask the Doctor about the cuda_runtime check; with `autoInstall`, a missing
   // CUDA runtime (fixable via install_cuda_deps) kicks off the install and
   // tracks its progress over the /api/doctor/events WebSocket — the same fix
@@ -195,38 +250,101 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
     }
   }
 
-  // Run the install_cuda_deps Doctor fix, streaming progress until done, then
-  // re-check (deps installed ≠ GPU visible — the recheck settles which).
-  function installCudaDeps() {
-    setCudaState({ phase: 'installing', line: '' });
+  // Run a Doctor fix, streaming its progress over the /api/doctor/events
+  // WebSocket — the same fix machinery the setup wizard uses. Shared by the
+  // cuda + demucs installers below.
+  function streamDoctorFix(fixId, { onLine, onDone, onFail }) {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/api/doctor/events`);
     const fail = (message) => {
       try { ws.close(); } catch { /* noop */ }
-      setCudaState({ phase: 'error', message });
+      onFail(message);
     };
     ws.onopen = () => {
       // POST only once the socket is listening, so no progress line is lost.
-      startDoctorFix('install_cuda_deps').catch((err) => fail(String(err?.message || err)));
+      startDoctorFix(fixId).catch((err) => fail(String(err?.message || err)));
     };
     ws.onerror = () => fail('無法連線安裝進度伺服器，請重試。');
-    ws.onmessage = async (e) => {
+    ws.onmessage = (e) => {
       let ev;
       try {
         ev = JSON.parse(e.data);
       } catch {
         return;
       }
-      if (ev.fix !== 'install_cuda_deps') return;
+      if (ev.fix !== fixId) return;
       if (ev.type === 'log') {
-        setCudaState({ phase: 'installing', line: ev.line });
+        onLine(ev.line);
       } else if (ev.type === 'failed') {
         fail(ev.error || '安裝失敗，請重試。');
       } else if (ev.type === 'done') {
         try { ws.close(); } catch { /* noop */ }
-        checkCudaRuntime({ autoInstall: false });
+        onDone();
       }
     };
+  }
+
+  // Run the install_cuda_deps Doctor fix, streaming progress until done, then
+  // re-check (deps installed ≠ GPU visible — the recheck settles which).
+  function installCudaDeps() {
+    setCudaState({ phase: 'installing', line: '' });
+    streamDoctorFix('install_cuda_deps', {
+      onLine: (line) => setCudaState({ phase: 'installing', line }),
+      onFail: (message) => setCudaState({ phase: 'error', message }),
+      onDone: () => checkCudaRuntime({ autoInstall: false }),
+    });
+  }
+
+  async function handleLyricsPolishChange(value) {
+    setSavingLyricsPolish(true);
+    setError('');
+    try {
+      await setLyricsPolish(value);
+      setLyricsPolishState(value);
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally {
+      setSavingLyricsPolish(false);
+    }
+  }
+
+  // Ask the Doctor about the demucs_deps check; with `autoInstall`, missing
+  // deps kick off the install right away (mirrors checkCudaRuntime). The
+  // check is optional backend-side — separation degrades gracefully — so a
+  // missing install renders as a neutral hint, not an error.
+  async function checkDemucsDeps({ autoInstall }) {
+    setDemucsState({ phase: 'checking' });
+    try {
+      const report = await getDoctor();
+      const check = report.checks.find((c) => c.id === 'demucs_deps');
+      if (!check) {
+        // Backend considers separation off (e.g. env override) — nothing to show.
+        setDemucsState(null);
+        return;
+      }
+      if (check.status === 'ok') {
+        setDemucsState({ phase: 'ok' });
+      } else if (check.fix === 'install_demucs_deps' && autoInstall) {
+        installDemucsDeps();
+      } else {
+        setDemucsState({
+          phase: 'missing',
+          message: check.detail || '尚未安裝 Demucs 依賴。',
+          canInstall: check.fix === 'install_demucs_deps',
+        });
+      }
+    } catch (err) {
+      setDemucsState({ phase: 'error', message: String(err?.message || err) });
+    }
+  }
+
+  function installDemucsDeps() {
+    setDemucsState({ phase: 'installing', line: '' });
+    streamDoctorFix('install_demucs_deps', {
+      onLine: (line) => setDemucsState({ phase: 'installing', line }),
+      onFail: (message) => setDemucsState({ phase: 'error', message }),
+      onDone: () => checkDemucsDeps({ autoInstall: false }),
+    });
   }
 
   async function performDelete(target) {
@@ -550,6 +668,111 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
                     使用 GPU 時建議將 Compute type 改為 float16。
                   </div>
                 )}
+
+                <div style={{ ...sectionTitleStyle, marginTop: 8 }}>人聲分離（Demucs）</div>
+                <div style={rowStyle}>
+                  <span style={{ fontSize: 12, color: theme.textSecondary, flexShrink: 0, width: 90 }}>執行時機</span>
+                  <CustomSelect
+                    theme={theme}
+                    value={vocalSeparation}
+                    disabled={savingVocalSeparation}
+                    onChange={handleVocalSeparationChange}
+                    options={VOCAL_SEPARATION_OPTIONS}
+                    ariaLabel="Vocal separation"
+                    style={{ flex: 1, width: 'auto', background: theme.inputBg, border: 'none', fontWeight: 600 }}
+                  />
+                </div>
+                {vocalSeparation !== 'off' && demucsState && (
+                  <div
+                    style={{
+                      fontSize: 11.5,
+                      lineHeight: 1.6,
+                      borderRadius: 8,
+                      padding: '8px 10px',
+                      background:
+                        demucsState.phase === 'error'
+                          ? 'rgba(255,107,98,0.12)'
+                          : demucsState.phase === 'ok'
+                            ? 'rgba(52,199,89,0.12)'
+                            : theme.chipBg,
+                      color:
+                        demucsState.phase === 'error'
+                          ? '#ff6b62'
+                          : demucsState.phase === 'ok'
+                            ? '#34c759'
+                            : theme.textSecondary,
+                    }}
+                  >
+                    {demucsState.phase === 'checking' && '正在檢查 Demucs 依賴…'}
+                    {demucsState.phase === 'ok' && '✓ Demucs 已就緒，符合條件的影片將先分離人聲再辨識。'}
+                    {demucsState.phase === 'error' && demucsState.message}
+                    {demucsState.phase === 'missing' && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span>{demucsState.message}</span>
+                        {demucsState.canInstall && (
+                          <button
+                            type="button"
+                            onClick={installDemucsDeps}
+                            style={{
+                              border: 'none',
+                              borderRadius: 6,
+                              padding: '3px 10px',
+                              fontSize: 11.5,
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              background: ACCENT,
+                              color: '#fff',
+                            }}
+                          >
+                            立即安裝
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {demucsState.phase === 'installing' && (
+                      <>
+                        <div>正在安裝 Demucs 依賴（torchaudio 等）…</div>
+                        {demucsState.line && (
+                          <div
+                            style={{
+                              fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace',
+                              fontSize: 10.5,
+                              color: theme.textTertiary,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {demucsState.line}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+                <div style={hintTextStyle}>
+                  轉錄前先以 Demucs 分離人聲，可大幅提升音樂影片的歌詞辨識品質，但每支影片會多花數分鐘（CPU）。
+                  需安裝額外依賴（ai/requirements-demucs.txt）；未安裝時會自動改用原始音訊，不影響字幕產生。
+                  「關閉」為全域停用，個別影片的重新產生選項也無法開啟。
+                </div>
+
+                <div style={{ ...sectionTitleStyle, marginTop: 8 }}>歌詞修正（LLM）</div>
+                <div style={rowStyle}>
+                  <span style={{ fontSize: 12, color: theme.textSecondary, flexShrink: 0, width: 90 }}>執行時機</span>
+                  <CustomSelect
+                    theme={theme}
+                    value={lyricsPolish}
+                    disabled={savingLyricsPolish}
+                    onChange={handleLyricsPolishChange}
+                    options={LYRICS_POLISH_OPTIONS}
+                    ariaLabel="歌詞修正"
+                    style={{ flex: 1, width: 'auto', background: theme.inputBg, border: 'none', fontWeight: 600 }}
+                  />
+                </div>
+                <div style={hintTextStyle}>
+                  辨識完成後，交由翻譯用的 LLM 依影片標題／頻道脈絡校對聽錯的歌詞（時間軸不變、僅逐行修字）。
+                  使用與翻譯相同的 API Key；未設定 Key 時保留原始辨識結果。修正過的字幕會標記為 AI 校對。
+                </div>
               </div>
             )}
 

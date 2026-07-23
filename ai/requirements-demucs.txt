@@ -1,0 +1,15 @@
+# Optional Demucs vocal-separation deps (config.toml `[ai] vocal_separation`,
+# ai/pipeline/separate.py) — deliberately NOT part of requirements.txt, same
+# contract as requirements-cuda.txt: installs that never separate vocals
+# shouldn't pay for these. When absent, separate.py logs a warning and the
+# pipeline transcribes the original audio unchanged.
+#
+# torch itself is already in the base venv (via stable-ts -> openai-whisper),
+# so the big cost here is torchaudio + demucs' own deps (einops, julius,
+# lameenc, openunmix, ...). Model weights (~80MB for htdemucs) download into
+# the torch hub cache on first use.
+#
+# Pinned: demucs upstream is archived/unmaintained, so a floating version
+# can't help us and a broken fresh resolve could (same reasoning as the
+# ctranslate2/onnxruntime pins in requirements.txt).
+demucs==4.0.1

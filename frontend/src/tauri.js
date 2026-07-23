@@ -102,6 +102,26 @@ export async function setWhisperTemperature(temperature) {
 }
 
 /**
+ * Persist the Demucs vocal-separation policy — `auto` (music videos only) /
+ * `off` (global hard kill-switch) / `always` (Tauri only). Takes effect on
+ * the next generation job, no restart. No-op in a browser.
+ */
+export async function setVocalSeparation(policy) {
+  if (!isTauri()) return;
+  await invoke('set_vocal_separation', { policy });
+}
+
+/**
+ * Persist the LLM lyrics-polish policy — `auto` (music videos only) /
+ * `off` (global hard kill-switch) / `always` (Tauri only). No-op in a
+ * browser.
+ */
+export async function setLyricsPolish(policy) {
+  if (!isTauri()) return;
+  await invoke('set_lyrics_polish', { policy });
+}
+
+/**
  * The settings page's current effective values — `{ whisper_model,
  * compute_type, device, whisper_temperature }` — merging any live env
  * override with persisted settings and built-in defaults (Tauri only).

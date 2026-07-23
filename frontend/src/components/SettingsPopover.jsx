@@ -93,6 +93,10 @@ export default function SettingsPopover({
   onVadSpeechPadMsChange,
   vadMaxSpeechS,
   onVadMaxSpeechSChange,
+  separateVocals,
+  onSeparateVocalsChange,
+  lyricsPolish,
+  onLyricsPolishChange,
   onResetGenerationSettings,
   onRegenerateSubtitles,
   regenerateDisabled,
@@ -450,6 +454,10 @@ export default function SettingsPopover({
             onVadSpeechPadMsChange={onVadSpeechPadMsChange}
             vadMaxSpeechS={vadMaxSpeechS}
             onVadMaxSpeechSChange={onVadMaxSpeechSChange}
+            separateVocals={separateVocals}
+            onSeparateVocalsChange={onSeparateVocalsChange}
+            lyricsPolish={lyricsPolish}
+            onLyricsPolishChange={onLyricsPolishChange}
             onResetGenerationSettings={onResetGenerationSettings}
           />
 

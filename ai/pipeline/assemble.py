@@ -14,6 +14,7 @@ def assemble(
     degraded: bool,
     source: Optional[str] = None,
     target_source: Optional[str] = None,
+    polished: Optional[bool] = None,
 ) -> dict:
     """Build the canonical SubtitleDoc.
 
@@ -38,6 +39,12 @@ def assemble(
     was time-overlap-merged onto the source timeline, zero LLM calls) or
     `"llm"` (machine-translated). Omitted (not even `None`/`null`) when not
     given, same convention as `source`.
+
+    `polished` is likewise additive: True when the free-ASR transcript was
+    run through the LLM lyrics-polish pass (ai/pipeline/polish.py) -- the
+    source text is then LLM-corrected, not verbatim what Whisper heard.
+    Omitted when polish didn't run (or degraded to a no-op), same
+    convention as `source`.
     """
     doc: dict = {
         "version": 1,
@@ -53,6 +60,8 @@ def assemble(
         doc["source"] = source
     if target_source:
         doc["target_source"] = target_source
+    if polished:
+        doc["polished"] = True
     return doc
 
 

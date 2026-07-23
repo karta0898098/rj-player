@@ -80,6 +80,19 @@ pub struct Config {
     /// wheels cuda needs. Env: `WHISPER_DEVICE`. TOML: `[ai] device`.
     /// (default `cpu`).
     pub device: String,
+    /// Demucs vocal-separation policy for the ASR stage: `auto` (separate
+    /// only when `meta.is_music_video`), `off` (hard-disabled globally —
+    /// per-request overrides can't turn it on), or `always` (every video).
+    /// Any unrecognized value behaves as `auto`. Env: `VOCAL_SEPARATION`.
+    /// TOML: `[ai] vocal_separation`. (default `auto`).
+    pub vocal_separation: String,
+    /// LLM lyrics-polish policy for the ASR stage (`ai/pipeline/polish.py`,
+    /// the LyricWhiz-style correction pass): `auto` (only for
+    /// `meta.is_music_video`), `off` (hard-disabled globally), or `always`.
+    /// Same semantics as `vocal_separation`; needs a translation LLM key
+    /// (degrades to the raw transcript without one). Env: `LYRICS_POLISH`.
+    /// TOML: `[ai] lyrics_polish`. (default `auto`).
+    pub lyrics_polish: String,
     /// Forces a translation LLM provider (`gemini`|`openai`|`anthropic`);
     /// `None` lets the AI worker auto-detect from whichever API key is
     /// present. Env: `LLM_PROVIDER`. TOML: `[llm] provider`.
@@ -128,6 +141,8 @@ struct FileAi {
     temperature: Option<f32>,
     compute_type: Option<String>,
     device: Option<String>,
+    vocal_separation: Option<String>,
+    lyrics_polish: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -233,6 +248,14 @@ impl Config {
             .ok()
             .or_else(|| file.as_ref().and_then(|f| f.ai.device.clone()))
             .unwrap_or_else(|| "cpu".to_string());
+        let vocal_separation = std::env::var("VOCAL_SEPARATION")
+            .ok()
+            .or_else(|| file.as_ref().and_then(|f| f.ai.vocal_separation.clone()))
+            .unwrap_or_else(|| "auto".to_string());
+        let lyrics_polish = std::env::var("LYRICS_POLISH")
+            .ok()
+            .or_else(|| file.as_ref().and_then(|f| f.ai.lyrics_polish.clone()))
+            .unwrap_or_else(|| "auto".to_string());
 
         let llm_provider = std::env::var("LLM_PROVIDER")
             .ok()
@@ -264,6 +287,8 @@ impl Config {
             whisper_temperature,
             compute_type,
             device,
+            vocal_separation,
+            lyrics_polish,
             llm_provider,
             llm_model,
             gemini_api_key,
@@ -391,6 +416,21 @@ impl Config {
     /// Live counterpart to `device` (see [`Self::live_whisper_model`]).
     pub fn live_device(&self) -> String {
         live_setting("WHISPER_DEVICE").unwrap_or_else(|| self.device.clone())
+    }
+
+    /// Live counterpart to `vocal_separation` (see
+    /// [`Self::live_whisper_model`]). Like `compute_type`/`device`, this is
+    /// a global settings-page knob (`"off"` is a hard kill-switch that even
+    /// per-request overrides can't defeat — see
+    /// `orchestrator::effective_separate_vocals`).
+    pub fn live_vocal_separation(&self) -> String {
+        live_setting("VOCAL_SEPARATION").unwrap_or_else(|| self.vocal_separation.clone())
+    }
+
+    /// Live counterpart to `lyrics_polish` (see
+    /// [`Self::live_vocal_separation`] — same global-knob semantics).
+    pub fn live_lyrics_polish(&self) -> String {
+        live_setting("LYRICS_POLISH").unwrap_or_else(|| self.lyrics_polish.clone())
     }
 
     /// Create the data directory tree if it doesn't exist yet (boot-time init).

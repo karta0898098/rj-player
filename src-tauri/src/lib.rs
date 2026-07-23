@@ -37,6 +37,8 @@ pub fn run() {
         set_whisper_model,
         set_compute_type,
         set_device,
+        set_vocal_separation,
+        set_lyrics_polish,
         set_whisper_temperature,
         get_settings,
         reveal_in_finder,
@@ -216,11 +218,19 @@ fn resolve_config(handle: &AppHandle) -> Config {
 
         // Persisted settings (dsd §13.7): the wizard's chosen Whisper model
         // overrides the config default (an explicit env var still wins).
-        if let Some(m) = read_settings(&app_data.join("settings.json"))
-            .get("whisper_model")
-            .and_then(|v| v.as_str())
-        {
+        let settings = read_settings(&app_data.join("settings.json"));
+        if let Some(m) = settings.get("whisper_model").and_then(|v| v.as_str()) {
             set_env_if_absent("WHISPER_MODEL", m);
+        }
+        // Same re-apply for the Demucs vocal-separation policy, so a
+        // settings-page "off" survives an app restart (an explicit env var
+        // still wins, mirroring whisper_model above).
+        if let Some(v) = settings.get("vocal_separation").and_then(|v| v.as_str()) {
+            set_env_if_absent("VOCAL_SEPARATION", v);
+        }
+        // And for the LLM lyrics-polish policy (same semantics).
+        if let Some(v) = settings.get("lyrics_polish").and_then(|v| v.as_str()) {
+            set_env_if_absent("LYRICS_POLISH", v);
         }
     }
 
@@ -475,6 +485,37 @@ fn set_device(app: tauri::AppHandle, device: String) -> Result<(), String> {
     )
 }
 
+/// Persist the chosen Demucs vocal-separation policy (`auto` / `off` /
+/// `always` — see `backend/src/config.rs`'s `vocal_separation`). `off` is
+/// the global hard kill-switch: even a per-request override can't turn
+/// separation on. Takes effect on the next generation job — the backend
+/// reads `VOCAL_SEPARATION` live per job (`Config::live_vocal_separation`),
+/// no restart.
+#[tauri::command]
+fn set_vocal_separation(app: tauri::AppHandle, policy: String) -> Result<(), String> {
+    write_setting(
+        &app,
+        "vocal_separation",
+        serde_json::Value::String(policy.clone()),
+        "VOCAL_SEPARATION",
+        &policy,
+    )
+}
+
+/// Persist the LLM lyrics-polish policy (`auto` / `off` / `always` — see
+/// `backend/src/config.rs`'s `lyrics_polish`). Same live-per-job semantics
+/// as `set_vocal_separation`.
+#[tauri::command]
+fn set_lyrics_polish(app: tauri::AppHandle, policy: String) -> Result<(), String> {
+    write_setting(
+        &app,
+        "lyrics_polish",
+        serde_json::Value::String(policy.clone()),
+        "LYRICS_POLISH",
+        &policy,
+    )
+}
+
 /// Persist the chosen Whisper sampling temperature (dsd.md §13.7's advanced
 /// 溫度 knob).
 #[tauri::command]
@@ -521,6 +562,8 @@ fn get_settings(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
         "compute_type": live_string("WHISPER_COMPUTE_TYPE", &settings, "compute_type", "int8"),
         "device": live_string("WHISPER_DEVICE", &settings, "device", "cpu"),
         "whisper_temperature": whisper_temperature,
+        "vocal_separation": live_string("VOCAL_SEPARATION", &settings, "vocal_separation", "auto"),
+        "lyrics_polish": live_string("LYRICS_POLISH", &settings, "lyrics_polish", "auto"),
     }))
 }
 

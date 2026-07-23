@@ -72,6 +72,21 @@ pub struct PipelineOverrides {
     /// as before this feature existed.
     #[serde(default)]
     pub reference_lyrics: Option<String>,
+    /// Per-request Demucs vocal-separation override. `None` (the default,
+    /// and the auto-pipeline-after-download path) defers to the global
+    /// `vocal_separation` policy (`Config::live_vocal_separation`) — under
+    /// `"auto"` that means "separate iff `meta.is_music_video`". `Some`
+    /// forces it on/off for this run — except when the global policy is
+    /// `"off"`, which is a hard kill-switch that wins over everything (see
+    /// `orchestrator::effective_separate_vocals`).
+    #[serde(default)]
+    pub separate_vocals: Option<bool>,
+    /// Per-request LLM lyrics-polish override — same tri-state semantics as
+    /// `separate_vocals` above, resolved against the global `lyrics_polish`
+    /// policy (`Config::live_lyrics_polish`) by
+    /// `orchestrator::effective_auto_policy`.
+    #[serde(default)]
+    pub lyrics_polish: Option<bool>,
 }
 
 /// A unit of work submitted to the single-worker queue.
@@ -131,6 +146,8 @@ pub async fn run_worker(
         let whisper_temperature = config.live_whisper_temperature();
         let compute_type = config.live_compute_type();
         let device = config.live_device();
+        let vocal_separation = config.live_vocal_separation();
+        let lyrics_polish = config.live_lyrics_polish();
         match job {
             Job::Download {
                 video_id,
@@ -146,6 +163,8 @@ pub async fn run_worker(
                     whisper_temperature,
                     &compute_type,
                     &device,
+                    &vocal_separation,
+                    &lyrics_polish,
                     video_id,
                     url,
                     auto_pipeline,
@@ -161,11 +180,14 @@ pub async fn run_worker(
                     &store,
                     &hub,
                     &rpc,
+                    &ytdlp,
                     &video_id,
                     &whisper_model,
                     whisper_temperature,
                     &compute_type,
                     &device,
+                    &vocal_separation,
+                    &lyrics_polish,
                     force,
                     &overrides,
                 )
@@ -189,6 +211,8 @@ async fn process_download_job(
     whisper_temperature: f32,
     compute_type: &str,
     device: &str,
+    vocal_separation: &str,
+    lyrics_polish: &str,
     video_id: String,
     url: String,
     auto_pipeline: bool,
@@ -368,11 +392,14 @@ async fn process_download_job(
             store,
             hub,
             rpc,
+            ytdlp,
             &video_id,
             whisper_model,
             whisper_temperature,
             compute_type,
             device,
+            vocal_separation,
+            lyrics_polish,
             false,
             &overrides,
         )
@@ -445,7 +472,7 @@ mod tests {
         store.save_meta(&meta).await.unwrap();
 
         process_download_job(
-            &store, &hub, &ytdlp, &rpc, "small", 0.0, "int8", "cpu", video_id.clone(), meta.source_url.clone(), true,
+            &store, &hub, &ytdlp, &rpc, "small", 0.0, "int8", "cpu", "auto", "auto", video_id.clone(), meta.source_url.clone(), true,
         )
         .await;
 
@@ -469,6 +496,8 @@ mod tests {
                 max_speech_duration_s: Some(20.0),
             },
             reference_lyrics: None,
+            separate_vocals: Some(true),
+            lyrics_polish: Some(false),
         });
 
         let json = serde_json::to_string(&meta).expect("serialize");
