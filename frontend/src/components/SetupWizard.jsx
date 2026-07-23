@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { getDoctor, startDoctorFix } from '../api.js';
-import { setLlmKey, llmKeyPresent, setWhisperModel } from '../tauri.js';
+import { setLlmKey, llmKeyPresent, setWhisperModel, setDevice, getPlatform } from '../tauri.js';
 import CustomSelect from './CustomSelect.jsx';
 
 const WIZARD_MODEL_OPTIONS = [
@@ -64,6 +64,15 @@ export default function SetupWizard({ onComplete }) {
   const [savingKey, setSavingKey] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [checkingId, setCheckingId] = useState(null); // id of a built-in check being manually rechecked
+  const [platform, setPlatform] = useState('web'); // 'macos' | 'windows' | 'web'
+  // ASR device chosen on the welcome step (Windows only offers cuda);
+  // persisted via setDevice when leaving step 0 so the install step's Doctor
+  // report includes (and auto-fixes) the cuda_runtime check.
+  const [device, setDeviceState] = useState('cpu');
+
+  useEffect(() => {
+    getPlatform().then(setPlatform).catch(() => {});
+  }, []);
 
   // Refs so the (once-registered) WebSocket handler reads current values.
   const stepRef = useRef(step);
@@ -238,7 +247,25 @@ export default function SetupWizard({ onComplete }) {
 
   // Footer primary action per step.
   const primaries = [
-    { label: '開始', disabled: false, action: () => setStep(1) },
+    {
+      label: '開始',
+      disabled: false,
+      action: async () => {
+        // Persist the welcome-step device choice before the install step's
+        // Doctor pass, so a cuda pick surfaces (and auto-installs) the
+        // cuda_runtime check. Refresh so the report reflects it even when
+        // everything else is already installed (re-run wizard case).
+        if (platform === 'windows') {
+          try {
+            await setDevice(device);
+            await refresh();
+          } catch {
+            /* the install step re-fetches anyway */
+          }
+        }
+        setStep(1);
+      },
+    },
     {
       label: '下一步',
       disabled: !requiredOk,
@@ -373,12 +400,48 @@ export default function SetupWizard({ onComplete }) {
             }}
           >
             {step === 0 && (
-              <IntroPane
-                chipBg="rgba(224,69,63,0.18)"
-                stroke="#e0453f"
-                title="歡迎使用 rj-player"
-                body="首次啟動需要下載一些 AI 元件（約 2.8 GB），並在背景設定本機語音辨識與翻譯功能。這需要網路連線，完成後就能離線使用。"
-              />
+              <>
+                <IntroPane
+                  chipBg="rgba(224,69,63,0.18)"
+                  stroke="#e0453f"
+                  title="歡迎使用 rj-player"
+                  body="首次啟動需要下載一些 AI 元件（約 2.8 GB），並在背景設定本機語音辨識與翻譯功能。這需要網路連線，完成後就能離線使用。"
+                />
+                {platform === 'windows' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.72)' }}>
+                      語音辨識裝置
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {[
+                        { v: 'cpu', t: 'CPU', d: '相容性最好（預設）' },
+                        { v: 'cuda', t: 'NVIDIA GPU（CUDA）', d: '需要 NVIDIA 顯示卡與驅動，辨識快數倍' },
+                      ].map((o) => (
+                        <div
+                          key={o.v}
+                          onClick={() => setDeviceState(o.v)}
+                          style={{
+                            flex: 1,
+                            cursor: 'pointer',
+                            borderRadius: 10,
+                            padding: '10px 12px',
+                            border: `1px solid ${device === o.v ? '#e0453f' : 'rgba(255,255,255,0.14)'}`,
+                            background: device === o.v ? 'rgba(224,69,63,0.12)' : 'rgba(255,255,255,0.04)',
+                          }}
+                        >
+                          <div style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.92)' }}>{o.t}</div>
+                          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>{o.d}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {device === 'cuda' && (
+                      <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6 }}>
+                        會額外下載 CUDA 執行期依賴（數百 MB）。若安裝時未偵測到可用的 GPU，可再改回 CPU。
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
             )}
 
             {step === 1 && (
@@ -540,6 +603,35 @@ export default function SetupWizard({ onComplete }) {
                               }}
                             >
                               {checkingId === c.id ? '檢查中…' : '重新檢查'}
+                            </button>
+                          )}
+                          {c.id === 'cuda_runtime' && st === 'broken' && (
+                            <button
+                              onClick={async () => {
+                                // Escape hatch: no usable GPU → drop back to
+                                // CPU so the wizard can proceed (the check
+                                // disappears from the next report).
+                                try {
+                                  await setDevice('cpu');
+                                  setDeviceState('cpu');
+                                } catch {
+                                  /* noop */
+                                }
+                                refresh().catch(() => {});
+                              }}
+                              style={{
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: 11,
+                                fontWeight: 700,
+                                padding: '6px 12px',
+                                borderRadius: 999,
+                                background: 'rgba(255,255,255,0.14)',
+                                color: 'rgba(255,255,255,0.94)',
+                                flexShrink: 0,
+                              }}
+                            >
+                              改回 CPU
                             </button>
                           )}
                         </div>

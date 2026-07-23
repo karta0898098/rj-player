@@ -196,9 +196,24 @@ impl Config {
             .ok()
             .or_else(|| file.as_ref().and_then(|f| f.ai.ai_dir.clone()))
             .unwrap_or_else(|| "../ai".to_string());
-        let ai_python =
-            std::env::var("AI_PYTHON").unwrap_or_else(|_| format!("{ai_dir}/.venv/bin/python"));
-        let ai_worker = std::env::var("AI_WORKER").unwrap_or_else(|_| format!("{ai_dir}/worker.py"));
+        // Built with PathBuf joins (not `format!("{ai_dir}/…")`): on Windows a
+        // bundled AI_DIR comes from Tauri's resource_dir(), which can be a
+        // verbatim `\\?\C:\…` path — and verbatim paths reject forward
+        // slashes outright (spawn fails with os error 123, ERROR_INVALID_NAME).
+        // Joins keep every separator platform-native. The venv layout differs
+        // per-OS too: `Scripts\python.exe` on Windows, `bin/python` elsewhere.
+        let ai_dir_path = std::path::PathBuf::from(&ai_dir);
+        let ai_python = std::env::var("AI_PYTHON").unwrap_or_else(|_| {
+            let venv = ai_dir_path.join(".venv");
+            let python = if cfg!(target_os = "windows") {
+                venv.join("Scripts").join("python.exe")
+            } else {
+                venv.join("bin").join("python")
+            };
+            python.to_string_lossy().into_owned()
+        });
+        let ai_worker = std::env::var("AI_WORKER")
+            .unwrap_or_else(|_| ai_dir_path.join("worker.py").to_string_lossy().into_owned());
         let uv_path = std::env::var("UV_PATH").ok();
         let whisper_model = std::env::var("WHISPER_MODEL")
             .ok()

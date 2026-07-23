@@ -15,6 +15,7 @@ commands.allow = [
   "llm_key_present",
   "set_whisper_model",
   "set_compute_type",
+  "set_device",
   "set_whisper_temperature",
   "get_settings",
   "reveal_in_finder",

@@ -580,7 +580,7 @@ impl RpcClient {
     async fn ensure_spawned(&self, guard: &mut Option<WorkerProcess>) -> Result<(), RpcError> {
         if guard.is_none() {
             tracing::info!(
-                python = %self.python,
+                python = %self.resolve_python(),
                 args = ?self.worker_args,
                 "spawning AI worker process"
             );
@@ -589,8 +589,38 @@ impl RpcClient {
         Ok(())
     }
 
+    /// The interpreter to actually spawn. The configured `self.python`
+    /// (`AI_PYTHON`) is resolved once at startup — but on a fresh desktop
+    /// install the managed venv is built *after* startup by the Doctor, so
+    /// the config snapshot still points at a path that doesn't exist (on
+    /// Windows the unix-layout default isn't even a syntactically valid path
+    /// under a verbatim `\\?\` AI_DIR — spawn dies with os error 123 until
+    /// the app is restarted). If the configured interpreter isn't a real
+    /// file, fall back to the managed venv's python live at spawn time.
+    /// Bare commands (`python3`, resolved via PATH — used by tests) aren't
+    /// files either, but for them the managed venv doesn't exist and the
+    /// fallback returns the configured value unchanged.
+    fn resolve_python(&self) -> String {
+        if std::path::Path::new(&self.python).is_file() {
+            return self.python.clone();
+        }
+        if let Some(runtime) = std::env::var_os("RJ_RUNTIME_DIR") {
+            let venv = std::path::PathBuf::from(runtime).join("venv");
+            let managed = if cfg!(target_os = "windows") {
+                venv.join("Scripts").join("python.exe")
+            } else {
+                venv.join("bin").join("python")
+            };
+            if managed.is_file() {
+                return managed.to_string_lossy().into_owned();
+            }
+        }
+        self.python.clone()
+    }
+
     async fn spawn_worker(&self) -> Result<WorkerProcess, RpcError> {
-        let mut command = Command::new(&self.python);
+        let python = self.resolve_python();
+        let mut command = Command::new(&python);
         command
             .hide_console()
             .args(&self.worker_args)
