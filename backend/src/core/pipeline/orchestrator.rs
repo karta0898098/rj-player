@@ -153,13 +153,27 @@ pub async fn run_pipeline(
         .clone()
         .filter(|lyrics| !lyrics.trim().is_empty());
 
-    // Manual source-language CC, fetched at download time
-    // (`YtDlp::fetch_captions`) when the uploader supplied one for
-    // this video's `source_lang`. Passed through whenever it exists,
-    // regardless of `reference_lyrics` -- `ai/worker.py` enforces the actual
-    // precedence (reference_lyrics > CC > Whisper ASR), so this orchestrator
-    // doesn't need to duplicate that decision.
-    let cc_path = if store.cc_exists(video_id) {
+    // The user-selected source language (persisted at add time); "ja" for old
+    // on-disk metas / callers that never sent one.
+    let source_lang = meta.source_lang.clone().unwrap_or_else(|| "ja".to_string());
+
+    // Manual source CC, fetched at download time (`YtDlp::fetch_captions`) and
+    // used as the source transcript to skip Whisper. Use it ONLY when it's in
+    // the selected source language: a CC in a *different* language (e.g. an
+    // English CC on a `ja` video -- as an older buggy fetch could persist via a
+    // stale `meta.source_cc_lang`) is a translation, not a transcript, and
+    // would yield the wrong source text. On mismatch we drop the CC so Whisper
+    // ASR runs against `source_lang` instead. A `None` `source_cc_lang` (videos
+    // from before that field existed) counts as a match, since back then
+    // `cc.srt` was always the source_lang track. This also lets a plain
+    // "重新產生字幕" fix an already-downloaded, mis-sourced video without a
+    // re-download. Beyond this, `ai/worker.py` enforces the full precedence
+    // (reference_lyrics > CC > Whisper ASR).
+    let source_cc_mismatches = meta
+        .source_cc_lang
+        .as_deref()
+        .is_some_and(|cc| cc != source_lang.as_str());
+    let cc_path = if !source_cc_mismatches && store.cc_exists(video_id) {
         Some(store.cc_path(video_id).to_string_lossy().to_string())
     } else {
         None
@@ -177,20 +191,10 @@ pub async fn run_pipeline(
         None
     };
 
-    // When a manual source CC was fetched, its ACTUAL language (persisted as
-    // `meta.source_cc_lang` at download time) is what the worker must treat as
-    // the source language -- it can differ from the user-selected
-    // `source_lang` (dsd.md §12.7's ASR-skip broadening: a `ja`-selected video
-    // with only an English manual CC lands `source_cc_lang == "en"`). The
-    // worker uses that CC as the source transcript (`source == "cc"`), so its
-    // romaji/translate stages must key off the CC's real language, not the
-    // user's pick. With no source CC, Whisper runs against `source_lang` as
-    // before.
-    let effective_source_lang = cc_path
-        .as_ref()
-        .and(meta.source_cc_lang.clone())
-        .or_else(|| meta.source_lang.clone())
-        .unwrap_or_else(|| "ja".to_string());
+    // The source CC (`cc_path`) is only ever kept when it matches `source_lang`
+    // (guarded above), so the worker's source language is simply `source_lang`
+    // -- no more keying off a mismatched CC's language.
+    let effective_source_lang = source_lang;
 
     let params = GenerateSubtitlesParams {
         video_id: video_id.to_string(),
@@ -743,6 +747,57 @@ mod tests {
         // `target_cc_reuse_marks_target_source_cc` below).
         let doc = store.load_subtitles("ccvideo0001").await.unwrap().unwrap();
         assert_eq!(doc.target_source, None);
+    }
+
+    /// A `ja`-selected video carrying a STALE/mismatched `source_cc_lang`
+    /// (`"en"`, as an older buggy fetch could persist alongside an English
+    /// `cc.srt`) must NOT use that CC as its source. The pipeline drops the
+    /// mismatched CC and runs ASR against the user's `source_lang`, so
+    /// `doc.language_source` comes out `"ja"` (not `"en"`) -- i.e. a plain
+    /// "重新產生字幕" fixes a mis-sourced video without a re-download.
+    #[tokio::test]
+    async fn mismatched_source_cc_lang_is_dropped_and_asr_uses_source_lang() {
+        let tmp = TempDataDir::new();
+        let store = FsStore::new(tmp.0.clone());
+        let hub = EventHub::new();
+        let rpc = RpcClient::new("python3", stub_worker_path());
+
+        seed_video(&store, "mismatchcc1", VideoStatus::Downloaded).await;
+        let mut meta = store.load_meta("mismatchcc1").await.unwrap().unwrap();
+        meta.source_lang = Some("ja".to_string());
+        meta.source_cc_lang = Some("en".to_string()); // stale/buggy: en CC on a ja video
+        store.save_meta(&meta).await.unwrap();
+
+        // An English source CC left on disk by the buggy fetch.
+        tokio::fs::write(
+            store.cc_path("mismatchcc1"),
+            "1\n00:00:00,000 --> 00:00:01,000\nHello\n\n",
+        )
+        .await
+        .unwrap();
+        assert!(store.cc_exists("mismatchcc1"));
+
+        run_pipeline(
+            &store,
+            &hub,
+            &rpc,
+            "mismatchcc1",
+            "small",
+            0.0,
+            "int8",
+            "cpu",
+            false,
+            &PipelineOverrides::default(),
+        )
+        .await;
+
+        let doc = store
+            .load_subtitles("mismatchcc1")
+            .await
+            .unwrap()
+            .expect("subtitles.json should have been written");
+        // ASR ran against the user's `ja`, NOT the mismatched English CC.
+        assert_eq!(doc.language_source, "ja");
     }
 
     /// dsd.md §12.4/§12.5/§12.7 (B5.5): when a manual target-language
