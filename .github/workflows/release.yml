@@ -1,0 +1,115 @@
+name: release
+
+# Cut a GitHub Release from a version tag. Push a tag like `v0.1.0` and this
+# builds the desktop app on both native OSes and publishes the installers as
+# release assets:
+#   • macOS  arm64  → .app + .dmg   (aarch64-apple-darwin)
+#   • Windows x64   → .msi + .exe   (x86_64-pc-windows-msvc)
+#
+# Flow (tauri-action's race-free multi-platform pattern):
+#   1. create-release  — make ONE draft release for the tag
+#   2. build           — each platform builds + uploads its bundles to it
+#   3. publish-release — flip the draft to published once both are done
+#
+# Builds are NOT signed/notarized yet (dsd §13 B6.7): Windows will show a
+# SmartScreen "unknown publisher" prompt. To cut a release:
+#   git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release + upload assets
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '')
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `rj-player ${tag}`,
+              body: [
+                'Desktop builds for macOS (Apple Silicon) and Windows x64.',
+                '',
+                '**Unsigned** — Windows shows a SmartScreen "unknown publisher"',
+                'warning; choose *More info → Run anyway*. First launch runs the',
+                'setup wizard to download the AI runtime and model.',
+              ].join('\n'),
+              draft: true,
+              prerelease: false,
+            })
+            return data.id
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # Apple Silicon runner
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm --prefix frontend ci
+
+      # Same as build-desktop.yml: fetch sidecars + build the SPA up front, then
+      # tauri-action builds with beforeBuildCommand nulled (tauri.ci.conf.json).
+      - name: Fetch sidecars (yt-dlp / ffmpeg / uv)
+        shell: bash
+        run: bash src-tauri/binaries/fetch-sidecars.sh
+
+      - name: Build frontend
+        run: npm --prefix frontend run build
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.ci.conf.json
+
+  publish-release:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              draft: false,
+            })

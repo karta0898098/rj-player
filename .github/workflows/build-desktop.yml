@@ -7,12 +7,12 @@ name: build-desktop
 # Bundles are uploaded as build artifacts; this workflow does NOT create a
 # GitHub Release or sign/notarize (that's a later step — dsd §13 B6.7).
 #
-# Run it manually from the Actions tab (workflow_dispatch), or push a v* tag.
+# Manual test-build only (Actions tab → Run workflow). Cutting an actual
+# release from a v* tag is handled by release.yml, which publishes the same
+# bundles as GitHub Release assets.
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
 
 jobs:
   build:
