@@ -108,16 +108,17 @@ pub struct VideoMeta {
     /// `source_lang`/`queued_options`.
     #[serde(default)]
     pub max_height: Option<u32>,
-    /// The actual language of the manual source CC that `fetch_captions`
-    /// picked for this video, when one was found (e.g. `"ja"`/`"en"`). May
-    /// differ from `source_lang`: the source-CC search accepts the selected
-    /// `source_lang` first, then falls back to `en`/`ja` (dsd.md §12.7's
-    /// ASR-skip broadening), so a video whose `source_lang` is `ja` but which
-    /// only ships an English manual CC lands here as `"en"`. The pipeline
-    /// uses THIS (not `source_lang`) as the worker's source language whenever
-    /// a source CC exists, so romaji/translation match the CC's real
-    /// language. `None` means no source CC was found (Whisper ASR will run
-    /// against `source_lang` as before). `#[serde(default)]` for the same
+    /// The language of the manual source CC that `fetch_captions` picked, when
+    /// one was found — always equal to `source_lang` now that the source-CC
+    /// search is restricted to the selected language only (its plain + `-orig`
+    /// tracks). It no longer cross-falls-back to `en`/`ja`: a CC in a language
+    /// other than the audio is a translation, not a transcript, so using it as
+    /// the source produced the wrong text (a `ja` video with only an English
+    /// CC used to land here as `"en"` and come out with English source text).
+    /// The pipeline still reads THIS as the worker's source language; kept as a
+    /// distinct field (rather than folded into `source_lang`) so the plumbing
+    /// stays intact. `None` means no source-language CC was found and Whisper
+    /// ASR runs against `source_lang`. `#[serde(default)]` for the same
     /// on-disk-compat reason as `source_lang`/`max_height`.
     #[serde(default)]
     pub source_cc_lang: Option<String>,

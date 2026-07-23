@@ -404,19 +404,17 @@ impl YtDlp {
         let video_dir = source_cc_path.parent().unwrap_or_else(|| Path::new("."));
         tokio::fs::create_dir_all(video_dir).await?;
 
-        // Source-track search order: selected `source_lang` first, then `en`,
-        // then `ja` -- deduped so an `en`/`ja` source_lang isn't requested
-        // twice. Each base language is immediately followed by its `-orig`
-        // variant so the plain track is preferred over `-orig` within a
-        // language.
-        let mut source_priority: Vec<String> = Vec::new();
-        for base in [source_lang, "en", "ja"] {
-            if source_priority.iter().any(|l| l == base) {
-                continue;
-            }
-            source_priority.push(base.to_string());
-            source_priority.push(format!("{base}-orig"));
-        }
+        // Source-track search: the selected `source_lang` ONLY (plain track,
+        // then its `-orig` creator-uploaded variant). Deliberately NO
+        // cross-language fallback to `en`/`ja`: a CC in a language other than
+        // the audio is a *translation*, not a transcript, so using it as the
+        // source layer produces the wrong text (e.g. a Japanese video with an
+        // English CC would come out with English source text). If there's no
+        // manual CC in the source language we let the pipeline fall back to
+        // Whisper ASR on the real audio instead. Matches dsd.md §12.7 B5.4
+        // ("抓取來源語人工 CC").
+        let source_priority: Vec<String> =
+            vec![source_lang.to_string(), format!("{source_lang}-orig")];
         let target_priority = ["zh-Hant", "zh-TW", "zh-HK", "zh"];
 
         // yt-dlp writes one file per matched language as `cc.<lang>.srt`
