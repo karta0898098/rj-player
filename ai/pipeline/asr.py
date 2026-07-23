@@ -59,7 +59,15 @@ def _add_cuda_dll_dirs() -> None:
     import importlib.util
 
     for mod in ("nvidia.cublas", "nvidia.cudnn"):
-        spec = importlib.util.find_spec(mod)
+        try:
+            spec = importlib.util.find_spec(mod)
+        except ImportError:
+            # find_spec imports the *parent* package first, so with no
+            # `nvidia` pip package installed at all it raises
+            # ModuleNotFoundError instead of returning None (e.g. a user
+            # relying on a system-wide CUDA/cuDNN already on PATH). That's
+            # "not found", not an error.
+            continue
         if spec is None or not spec.submodule_search_locations:
             continue
         bin_dir = os.path.join(list(spec.submodule_search_locations)[0], "bin")

@@ -5,7 +5,6 @@ use std::path::Path;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
-use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -68,9 +67,14 @@ pub fn build_router(state: SharedState, dist_dir: &Path) -> Router {
         // Static SPA fallback (dsd.md §13): only handles paths that matched
         // no route above, so it can't shadow the API or media endpoints.
         .fallback_service(serve_dist)
-        // Permissive CORS for local dev so the Vite dev server (a different
-        // origin/port) can call the API directly without a proxy.
-        .layer(CorsLayer::permissive())
+        // Deliberately NO CorsLayer: every real client is same-origin (dev
+        // goes through the Vite proxy — api.js uses relative paths — and the
+        // packaged app serves the SPA from this very server), so the
+        // browser's default same-origin policy is exactly the protection we
+        // want. The old `CorsLayer::permissive()` let ANY website the user
+        // visited drive this localhost API cross-origin — combined with the
+        // (since-fixed) path-traversal DELETEs, that was a drive-by
+        // arbitrary-directory-delete.
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

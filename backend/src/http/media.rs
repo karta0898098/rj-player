@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use crate::http::error::ApiError;
+use crate::http::error::{ensure_safe_id, ApiError};
 use crate::state::SharedState;
 
 pub async fn serve_video(
@@ -17,6 +17,7 @@ pub async fn serve_video(
     Path(id): Path<String>,
     request: Request,
 ) -> Result<Response, ApiError> {
+    ensure_safe_id(&id)?;
     let path = state.store.video_path(&id);
     if !path.exists() {
         return Err(ApiError::not_found(format!(
@@ -45,6 +46,7 @@ pub async fn serve_thumbnail(
     Path(id): Path<String>,
     request: Request,
 ) -> Result<Response, ApiError> {
+    ensure_safe_id(&id)?;
     let path = state.store.thumbnail_path(&id);
     if !path.exists() {
         return Err(ApiError::not_found(format!("no thumbnail for id {id}")));

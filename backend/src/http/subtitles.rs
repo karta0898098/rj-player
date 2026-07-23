@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::domain::{Cue, JobEvent, Stage, VideoStatus};
 use crate::core::pipeline::rpc::TokenizeParams;
 use crate::core::pipeline::{Job, PipelineOverrides, VadOverrides};
-use crate::http::error::ApiError;
+use crate::http::error::{ensure_safe_id, ApiError};
 use crate::state::SharedState;
 
 /// `GET /api/videos/:id/subtitles` — the canonical `SubtitleDoc` JSON.
@@ -25,6 +25,7 @@ pub async fn get_subtitles(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     let meta = state
         .store
         .load_meta(&id)
@@ -95,6 +96,7 @@ pub async fn trigger_pipeline(
     Path(id): Path<String>,
     body: Option<Json<PipelineRequest>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     let mut meta = state
         .store
         .load_meta(&id)
@@ -172,6 +174,7 @@ pub async fn trigger_retranslate(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     let mut meta = state
         .store
         .load_meta(&id)
@@ -292,6 +295,7 @@ pub async fn patch_cue(
     Path((id, cue_id)): Path<(String, u32)>,
     Json(patch): Json<CuePatch>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     // Existence gate (404) -- same as the other subtitle handlers.
     state
         .store
@@ -377,6 +381,7 @@ pub async fn replace_cues(
     Path(id): Path<String>,
     Json(body): Json<ReplaceCuesBody>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     state
         .store
         .load_meta(&id)

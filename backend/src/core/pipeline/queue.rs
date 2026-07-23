@@ -195,12 +195,15 @@ async fn process_download_job(
 ) {
     tracing::info!(%video_id, auto_pipeline, "download job starting");
 
-    let mut meta = store
-        .load_meta(&video_id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| VideoMeta::new(video_id.clone(), url.clone()));
+    // `create_video` persists meta.json (status Queued) BEFORE enqueueing,
+    // so a missing meta here means the video was deleted while it sat in
+    // the channel. Fabricating a fresh meta (as this used to) resurrected
+    // it: DELETE returned 204, then this job re-downloaded everything into
+    // a re-created folder minutes later.
+    let Some(mut meta) = store.load_meta(&video_id).await.ok().flatten() else {
+        tracing::info!(%video_id, "meta.json gone (video deleted while queued); skipping download job");
+        return;
+    };
 
     // The user cancelled this item (`POST /api/videos/:id/cancel`) while it
     // was still sitting in the mpsc buffer waiting for the worker. There's

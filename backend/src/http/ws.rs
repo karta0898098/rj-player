@@ -6,7 +6,7 @@
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use tokio::sync::broadcast;
 
 use crate::core::domain::JobEvent;
@@ -17,6 +17,9 @@ pub async fn video_events(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Response {
+    if let Err(err) = crate::http::error::ensure_safe_id(&id) {
+        return err.into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state, id))
 }
 

@@ -268,6 +268,19 @@ fn model_cached(hf_home: &std::path::Path, model: &str) -> bool {
 /// `models--Systran--faster-whisper-large-v3`.
 const HF_MODEL_DIR_PREFIX: &str = "models--Systran--faster-whisper-";
 
+/// The character set real faster-whisper model names use. Anything outside
+/// it (path separators, `..`, quotes…) is rejected wherever a model name is
+/// spliced into a filesystem path or `python -c` source.
+fn is_valid_model_name(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 64
+        && model != "."
+        && model != ".."
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// One cached faster-whisper model under `HF_HOME/hub`.
 #[derive(Debug, Serialize)]
 pub struct CachedModel {
@@ -360,6 +373,13 @@ fn dir_size(path: &std::path::Path) -> u64 {
 /// is a plain Whisper model size/name (e.g. `large-v3`), matched the same
 /// way [`model_cached`] does.
 pub fn delete_cached_model(model: &str) -> std::io::Result<bool> {
+    // `model` arrives straight from a percent-decoded URL segment, and the
+    // glued prefix alone does NOT stop traversal (an existing cache dir name
+    // followed by `/../..` walks right out of hub/) — so an unsafe name is
+    // simply "not cached". Same charset fix_download_model enforces.
+    if !is_valid_model_name(model) {
+        return Ok(false);
+    }
     let Some(hf_home) = std::env::var_os("HF_HOME").map(PathBuf::from) else {
         return Ok(false);
     };
@@ -622,10 +642,7 @@ async fn fix_download_model(hub: &DoctorHub, config: &Config) -> Result<(), Stri
     // The name is interpolated into `python -c` source: restrict it to the
     // character set real faster-whisper names use so a hand-edited
     // settings.json / env var can't break out of the string literal.
-    if !model
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
+    if !is_valid_model_name(&model) {
         return Err(format!("invalid whisper model name: {model:?}"));
     }
     let code = format!(

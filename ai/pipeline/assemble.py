@@ -69,14 +69,31 @@ def partial_doc(
     Used when a fatal exception happens mid-pipeline (e.g. tokenize/romaji
     crash) after ASR already produced segments, so the caller doesn't lose
     everything that *did* complete.
+
+    Cues are normalized to the full Rust `Cue` shape: a mid-tokenize crash
+    leaves some/all cues without `tokens`/`phonetic`/`target_text` (they're
+    filled incrementally by worker.py's stage loops), and the Rust side's
+    `Cue` requires `tokens`/`phonetic` with no serde defaults — an
+    un-normalized partial would fail to deserialize, turning the real stage
+    error into a protocol violation and losing the partial work entirely
+    (the exact thing this doc exists to prevent).
     """
     doc: dict = {
         "version": 1,
         "video_id": video_id,
         "language_source": source_lang,
         "target_lang": target_lang,
-        "duration_ms": duration_ms,
-        "cues": cues,
+        "duration_ms": duration_ms or 0,
+        "cues": [
+            {
+                **cue,
+                "source_text": cue.get("source_text") or "",
+                "tokens": cue.get("tokens", []),
+                "phonetic": cue.get("phonetic", ""),
+                "target_text": cue.get("target_text"),
+            }
+            for cue in cues
+        ],
     }
     if source:
         doc["source"] = source

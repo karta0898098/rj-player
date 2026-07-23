@@ -32,6 +32,13 @@ def _get_model(model_size: str, compute_type: str = "int8", device: str = "cpu")
     key = (model_size, compute_type, device)
     model = _model_cache.get(key)
     if model is None:
+        if device == "cuda":
+            # Same DLL-search-path setup as asr.py: without it, a forced-
+            # alignment job being the FIRST cuda model load in the process
+            # would fail to resolve cublas/cudnn on Windows.
+            from .asr import _add_cuda_dll_dirs
+
+            _add_cuda_dll_dirs()
         # Imported lazily, mirroring asr.py: importing stable_whisper (and
         # transitively faster_whisper/ctranslate2) has a non-trivial cost we
         # don't want to pay before the first real align request.

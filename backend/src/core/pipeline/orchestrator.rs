@@ -222,6 +222,16 @@ pub async fn run_pipeline(
         target_cc_path,
     };
 
+    // The pre-translate snapshot write below is spawned (the progress
+    // callback is sync), which left it UNORDERED relative to the terminal
+    // save: on the target-CC merge path translate is near-instant, so the
+    // snapshot task could be scheduled after the terminal save and clobber
+    // the finished doc (target_text back to null) under a Ready status.
+    // Keep the handle and await it before any terminal-path write.
+    let snapshot_write: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let snapshot_write_slot = snapshot_write.clone();
+
     let result = rpc
         .generate_subtitles(params, |event| match event {
             WorkerProgress::Stage(stage) => {
@@ -246,7 +256,7 @@ pub async fn run_pipeline(
                 // to make even its first network call.
                 let store = store.clone();
                 let video_id = video_id.to_string();
-                tokio::spawn(async move {
+                let handle = tokio::spawn(async move {
                     match store.save_subtitles(&doc).await {
                         Ok(()) => tracing::info!(
                             %video_id,
@@ -258,9 +268,22 @@ pub async fn run_pipeline(
                         ),
                     }
                 });
+                *snapshot_write_slot
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(handle);
             }
         })
         .await;
+
+    // Order the snapshot write (if one was spawned) before every terminal
+    // write below — both the Ready save and the fail() partial save.
+    let pending_snapshot = snapshot_write
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    if let Some(handle) = pending_snapshot {
+        let _ = handle.await;
+    }
 
     match result {
         Ok(doc) => {

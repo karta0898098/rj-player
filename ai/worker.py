@@ -226,8 +226,13 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 protocol.log(
                     "[cc_reverse] back-translation degraded; source layer may be incomplete"
                 )
+            # translate_segments degrades per-line to None (missing/exhausted
+            # API key, permanent LLM failure). A None here would crash
+            # tokenize below AND violates the Rust `Cue` schema
+            # (`source_text` is a non-nullable String) — so the whole
+            # zero-ASR job would die over lines we can simply leave blank.
             raw_segments = [
-                {"start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": ja}
+                {"start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": ja or ""}
                 for s, ja in zip(zh_segments, ja_texts)
             ]
             protocol.log(

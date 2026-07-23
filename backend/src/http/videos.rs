@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::domain::{JobEvent, VideoMeta, VideoStatus};
 use crate::core::downloader::extract_video_id;
 use crate::core::pipeline::{Job, PipelineOverrides};
-use crate::http::error::ApiError;
+use crate::http::error::{ensure_safe_id, ApiError};
 use crate::state::SharedState;
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +176,7 @@ pub async fn cancel_video(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     let mut meta = state
         .store
         .load_meta(&id)
@@ -228,6 +229,7 @@ pub async fn delete_video(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     if let Some(meta) = state.store.load_meta(&id).await? {
         if is_actively_processing(meta.status) {
             return Err(ApiError::conflict(format!(
@@ -259,6 +261,7 @@ pub async fn get_video(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_safe_id(&id)?;
     match state.store.load_meta(&id).await? {
         Some(meta) => Ok(Json(meta)),
         None => Err(ApiError::not_found(format!("no video with id {id}"))),

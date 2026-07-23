@@ -42,6 +42,32 @@ impl ApiError {
     }
 }
 
+/// Validate a `:id`-style path segment before it touches the filesystem.
+///
+/// axum percent-decodes `Path<String>`, so a raw URL segment can smuggle `/`,
+/// `\` or `..` into handlers that join it into paths (`<data>/videos/{id}`,
+/// the HF model cache) — which turned the DELETE endpoints into arbitrary
+/// `remove_dir_all` primitives reachable from a browser. Every handler that
+/// receives a path id calls this first. The charset is the union of what
+/// real ids need: YouTube ids are 11 chars of `[A-Za-z0-9_-]`, Whisper model
+/// names add `.`; 64 is a generous length cap.
+pub fn ensure_safe_id(id: &str) -> Result<(), ApiError> {
+    let ok = !id.is_empty()
+        && id.len() <= 64
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if ok {
+        Ok(())
+    } else {
+        // 404, not 400: don't advertise that the id was syntactically
+        // interesting — it simply doesn't exist.
+        Err(ApiError::not_found(format!("no such resource: {id:?}")))
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = Json(json!({

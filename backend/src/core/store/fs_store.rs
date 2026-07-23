@@ -206,6 +206,18 @@ impl FsStore {
     /// `DELETE /api/videos/:id` to reclaim space. Idempotent: a missing
     /// directory is treated as already-deleted (`Ok`), not an error.
     pub async fn delete_video(&self, video_id: &str) -> Result<(), StoreError> {
+        // Defense-in-depth behind the HTTP layer's ensure_safe_id: this is
+        // the one store method that recursively deletes, so refuse any id
+        // that isn't a plain single path segment — a traversal id must
+        // never reach remove_dir_all even if a future handler forgets to
+        // validate. Treated as already-deleted, same as a missing dir.
+        let safe = !video_id.is_empty()
+            && video_id != "."
+            && video_id != ".."
+            && !video_id.contains(['/', '\\']);
+        if !safe {
+            return Ok(());
+        }
         let dir = self.video_dir(video_id);
         match fs::remove_dir_all(&dir).await {
             Ok(()) => Ok(()),

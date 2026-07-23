@@ -36,6 +36,8 @@ pub enum RpcError {
     Serde(#[from] serde_json::Error),
     #[error("AI worker exited or closed stdout before replying")]
     WorkerExited,
+    #[error("AI worker produced no output for {0}s and was killed as wedged")]
+    Inactive(u64),
     #[error("AI worker protocol violation: {0}")]
     Protocol(String),
     #[error("AI worker reported an error at stage {stage:?}: {message}")]
@@ -313,6 +315,28 @@ impl RpcClient {
     /// and is the natural hook for a future `/health/ai`-style diagnostic
     /// endpoint or a startup smoke test.
     #[allow(dead_code)]
+    /// Bounded event wait. A worker that is *alive but silent* for this long
+    /// is treated as wedged (an LLM HTTP call with no timeout, a stuck GPU
+    /// kernel…): without a bound, `recv().await` holds the process mutex
+    /// forever — the queue never drains, later HTTP submits block once the
+    /// channel fills, and only an app restart recovers. Generous on purpose:
+    /// legitimate silent stretches exist (first-ever model download inside a
+    /// job can push minutes of nothing onto stdout), so this is a wedge
+    /// detector, not a liveness check. The `Some(Err(..))` the timeout maps
+    /// to makes every caller take its existing kill-worker-and-fail path.
+    async fn recv_bounded(rx: &mut mpsc::UnboundedReceiver<LineResult>) -> Option<LineResult> {
+        const WORKER_INACTIVITY_SECS: u64 = 30 * 60;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(WORKER_INACTIVITY_SECS),
+            rx.recv(),
+        )
+        .await
+        {
+            Ok(received) => received,
+            Err(_elapsed) => Some(Err(RpcError::Inactive(WORKER_INACTIVITY_SECS))),
+        }
+    }
+
     pub async fn ping(&self) -> Result<(), RpcError> {
         let id = format!("req-{}", Uuid::new_v4());
         let line = serde_json::to_string(&RpcRequest {
@@ -332,7 +356,7 @@ impl RpcClient {
 
         loop {
             let proc = guard.as_mut().expect("still spawned");
-            match proc.events_rx.recv().await {
+            match Self::recv_bounded(&mut proc.events_rx).await {
                 Some(Ok(env)) if env.id == id => match env.payload {
                     WorkerEventPayload::Pong => return Ok(()),
                     other => {
@@ -381,7 +405,7 @@ impl RpcClient {
 
         loop {
             let proc = guard.as_mut().expect("still spawned");
-            match proc.events_rx.recv().await {
+            match Self::recv_bounded(&mut proc.events_rx).await {
                 Some(Ok(env)) if env.id == id => match env.payload {
                     WorkerEventPayload::Stage { stage } => {
                         on_progress(WorkerProgress::Stage(stage));
@@ -454,7 +478,7 @@ impl RpcClient {
 
         loop {
             let proc = guard.as_mut().expect("still spawned");
-            match proc.events_rx.recv().await {
+            match Self::recv_bounded(&mut proc.events_rx).await {
                 Some(Ok(env)) if env.id == id => match env.payload {
                     WorkerEventPayload::Stage { stage } => {
                         on_progress(WorkerProgress::Stage(stage));
@@ -522,7 +546,7 @@ impl RpcClient {
 
         loop {
             let proc = guard.as_mut().expect("still spawned");
-            match proc.events_rx.recv().await {
+            match Self::recv_bounded(&mut proc.events_rx).await {
                 Some(Ok(env)) if env.id == id => match env.payload {
                     WorkerEventPayload::Tokenized { tokens, phonetic } => {
                         return Ok((tokens, phonetic))
