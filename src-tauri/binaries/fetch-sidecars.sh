@@ -88,9 +88,23 @@ else # windows
   curl -fSL --retry 3 -o "yt-dlp-$TRIPLE.exe" \
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 
-  fetch_ffmpeg_zip \
-    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" \
-    "ffmpeg-$TRIPLE.exe"
+  # BtbN rotates the nightly "latest" release daily, and the master-latest
+  # alias assets are uploaded last — or occasionally not at all (observed
+  # 2026-07-23: the fresh autobuild had zero master-latest assets, 404-ing
+  # the stable URL for hours). Resolve the real asset name from the release
+  # API instead: prefer the master-latest alias, fall back to the versioned
+  # master snapshot (ffmpeg-N-<rev>-win64-gpl.zip). GITHUB_TOKEN (present in
+  # CI) lifts the anonymous API rate limit shared across runner IPs.
+  echo "→ resolving BtbN ffmpeg win64-gpl asset …"
+  ffmpeg_urls="$(curl -fsSL --retry 3 \
+    ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
+    "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" \
+    | grep -o '"browser_download_url": *"[^"]*-win64-gpl\.zip"' \
+    | grep -o 'https://[^"]*')"
+  ffmpeg_url="$(printf '%s\n' "$ffmpeg_urls" | grep master-latest | head -1 || true)"
+  [ -n "$ffmpeg_url" ] || ffmpeg_url="$(printf '%s\n' "$ffmpeg_urls" | head -1)"
+  [ -n "$ffmpeg_url" ] || { echo "no win64-gpl ffmpeg asset in BtbN latest release" >&2; exit 1; }
+  fetch_ffmpeg_zip "$ffmpeg_url" "ffmpeg-$TRIPLE.exe"
 
   echo "→ uv.exe → uv-$TRIPLE.exe …"
   curl -fSL --retry 3 -o "$tmp/uv.zip" \

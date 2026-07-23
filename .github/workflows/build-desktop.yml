@@ -51,6 +51,10 @@ jobs:
       # below re-runs the same before-command, but by then both are a no-op.
       - name: Fetch sidecars (yt-dlp / ffmpeg / uv)
         shell: bash
+        env:
+          # lifts the anonymous GitHub API rate limit for the BtbN ffmpeg
+          # asset-resolution call in fetch-sidecars.sh
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash src-tauri/binaries/fetch-sidecars.sh
 
       - name: Build frontend

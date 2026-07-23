@@ -87,6 +87,10 @@ jobs:
       # tauri-action builds with beforeBuildCommand nulled (tauri.ci.conf.json).
       - name: Fetch sidecars (yt-dlp / ffmpeg / uv)
         shell: bash
+        env:
+          # lifts the anonymous GitHub API rate limit for the BtbN ffmpeg
+          # asset-resolution call in fetch-sidecars.sh
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash src-tauri/binaries/fetch-sidecars.sh
 
       - name: Build frontend
