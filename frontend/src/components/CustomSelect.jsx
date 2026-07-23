@@ -50,9 +50,16 @@ export default function CustomSelect({ theme, value, onChange, options, ariaLabe
       }
     }
     // Any scroll (capture: catches the inner popover's scroll too) or resize
-    // moves the trigger, so just close rather than chase it.
+    // moves the trigger — REPOSITION the menu to follow it rather than close.
+    // Closing here made the dropdown unusable inside Tauri's WKWebView, which
+    // fires spurious scroll events (elastic/momentum scrolling, focus shifts)
+    // that fired the instant the menu opened, closing it before an option
+    // could be picked ("畫質 can't be selected in the App"). Following the
+    // trigger is harmless when the scroll is spurious and correct when it's
+    // real.
     function onReflow() {
-      setOpen(false);
+      const el = triggerRef.current;
+      if (el) setRect(el.getBoundingClientRect());
     }
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKey, true);
