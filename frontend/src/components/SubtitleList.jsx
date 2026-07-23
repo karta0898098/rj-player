@@ -138,7 +138,11 @@ export default function SubtitleList({
   // playback got deep enough into the list that the active row was
   // perpetually right at the bottom edge.
   useEffect(() => {
-    if (!pinned || edit || !activeRowRef.current) return;
+    // Also frozen while the ⋯ menu is open: it's a portaled, `position:fixed`
+    // dropdown anchored to the trigger's rect, so an auto-scroll during
+    // playback would both detach it from its row and (via handleScroll) close
+    // it before the user can pick an item.
+    if (!pinned || edit || menu || !activeRowRef.current) return;
     programmaticScrollRef.current = true;
     activeRowRef.current.scrollIntoView({ block: 'center' });
     // Reset the guard once the browser has actually settled the scroll (and
@@ -159,7 +163,7 @@ export default function SubtitleList({
       cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
-  }, [activeId, pinned, edit]);
+  }, [activeId, pinned, edit, menu]);
 
   // Focus + select the textarea when an edit starts.
   useEffect(() => {
@@ -172,12 +176,12 @@ export default function SubtitleList({
   function handleScroll() {
     if (programmaticScrollRef.current) return;
     setPinned(false);
-    // A user scroll detaches the list from the portaled (fixed) menu's anchor,
-    // so close it rather than leave it floating over the wrong row.
-    if (menu) {
-      setMenu(null);
-      setDeleteArm(null);
-    }
+    // Deliberately do NOT close the ⋯ menu here. While the menu is open the
+    // auto-scroll effect is frozen (see its guard), so the list doesn't move
+    // on its own — and a still-settling scroll from just before the menu
+    // opened would otherwise slip past the programmatic guard and close the
+    // menu the instant it appears (unselectable during playback). Outside
+    // clicks close it via the backdrop instead.
   }
 
   function handleRowClick(cue) {
