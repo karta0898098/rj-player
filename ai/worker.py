@@ -483,7 +483,25 @@ def selftest(audio_path: str) -> None:
         sys.exit(1)
 
 
+def _force_utf8_stdio() -> None:
+    """Pin the protocol streams to UTF-8, whatever the OS locale says.
+
+    The protocol is UTF-8 JSON lines with `ensure_ascii=False` (Japanese/
+    Chinese text passes through verbatim). On Windows, Python <= 3.14 opens
+    *pipes* with the ANSI code page (e.g. cp950 on zh-TW systems), so the
+    first non-ASCII cue would raise UnicodeEncodeError — killing the worker
+    mid-job — and UTF-8 request bytes from the Rust side would fail to
+    decode on stdin. The backend also sets PYTHONUTF8=1 when spawning
+    (rpc.rs); this reconfigure is the in-process belt-and-braces for direct
+    invocations (selftest, dev runs).
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
+    _force_utf8_stdio()
     parser = argparse.ArgumentParser(description="rj-player Python AI worker")
     parser.add_argument(
         "--selftest",

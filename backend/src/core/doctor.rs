@@ -645,10 +645,13 @@ fn managed_venv() -> Result<PathBuf, String> {
 /// The venv's python interpreter (`Scripts\python.exe` on Windows, `bin/python`
 /// elsewhere).
 fn venv_python(venv: &std::path::Path) -> PathBuf {
+    // Chained joins, not "Scripts/python.exe": a '/' inside a component is
+    // kept verbatim by join(), and Windows verbatim (`\\?\`) base paths
+    // reject forward slashes outright.
     if cfg!(target_os = "windows") {
-        venv.join("Scripts/python.exe")
+        venv.join("Scripts").join("python.exe")
     } else {
-        venv.join("bin/python")
+        venv.join("bin").join("python")
     }
 }
 

@@ -624,6 +624,12 @@ impl RpcClient {
         command
             .hide_console()
             .args(&self.worker_args)
+            // UTF-8 mode: on Windows, Python <= 3.14 opens pipes with the ANSI
+            // code page (cp950 on zh-TW systems), which can neither encode the
+            // protocol's ensure_ascii=False Japanese output nor decode our
+            // UTF-8 request bytes. Harmless elsewhere (mac/linux are UTF-8
+            // already); worker.py additionally reconfigures its own streams.
+            .env("PYTHONUTF8", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

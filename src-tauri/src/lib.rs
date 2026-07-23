@@ -148,7 +148,7 @@ fn resolve_config(handle: &AppHandle) -> Config {
                 .path()
                 .resource_dir()
                 .ok()
-                .map(|r| r.join("frontend/dist"))
+                .map(|r| simplified(r).join("frontend").join("dist"))
                 .filter(|p| p.join("index.html").is_file())
                 .unwrap_or_else(|| dev_path("frontend/dist"))
         };
@@ -163,7 +163,7 @@ fn resolve_config(handle: &AppHandle) -> Config {
         if cfg!(debug_assertions) {
             std::env::set_var("DATA_DIR", dev_path("backend/data"));
         } else if let Ok(dir) = handle.path().app_data_dir() {
-            std::env::set_var("DATA_DIR", dir.join("data"));
+            std::env::set_var("DATA_DIR", simplified(dir).join("data"));
         }
     }
 
@@ -185,7 +185,7 @@ fn resolve_config(handle: &AppHandle) -> Config {
                 .path()
                 .resource_dir()
                 .ok()
-                .map(|r| r.join("ai"))
+                .map(|r| simplified(r).join("ai"))
                 .filter(|p| p.join("worker.py").is_file())
                 .unwrap_or_else(|| dev_path("ai"))
         };
@@ -199,15 +199,16 @@ fn resolve_config(handle: &AppHandle) -> Config {
     // python; otherwise leave AI_PYTHON at its default so ./dev.sh keeps using
     // the repo venv before the Doctor has run.
     if let Ok(app_data) = handle.path().app_data_dir() {
+        let app_data = simplified(app_data);
         let runtime = app_data.join("runtime");
         set_env_if_absent("RJ_RUNTIME_DIR", &runtime);
         set_env_if_absent("UV_PYTHON_INSTALL_DIR", runtime.join("python"));
         set_env_if_absent("UV_CACHE_DIR", runtime.join("uv-cache"));
         set_env_if_absent("HF_HOME", app_data.join("models"));
         let managed_python = if cfg!(target_os = "windows") {
-            runtime.join("venv/Scripts/python.exe")
+            runtime.join("venv").join("Scripts").join("python.exe")
         } else {
-            runtime.join("venv/bin/python")
+            runtime.join("venv").join("bin").join("python")
         };
         if std::env::var_os("AI_PYTHON").is_none() && managed_python.is_file() {
             std::env::set_var("AI_PYTHON", managed_python);
@@ -280,6 +281,25 @@ fn dev_path(rel: &str) -> PathBuf {
 /// Prepend directories to `PATH` (skipping any missing or already-present), so
 /// child processes (yt-dlp/ffmpeg) launched by the backend can be found even
 /// when the app was started from Finder with a minimal environment.
+/// Strip Windows' verbatim `\\?\` prefix from a drive-letter path (no-op on
+/// other platforms / UNC paths). Tauri's `resource_dir`/`app_data_dir` can
+/// come back verbatim; those paths flow into env vars consumed by child
+/// processes (python, uv, huggingface_hub) and into string joins — and
+/// verbatim paths both reject forward slashes and confuse non-Rust tooling,
+/// so keep the normal Win32 form everywhere user-visible.
+fn simplified(p: PathBuf) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        if let Some(s) = p.to_str() {
+            if let Some(rest) = s.strip_prefix(r"\\?\") {
+                if rest.as_bytes().get(1) == Some(&b':') {
+                    return PathBuf::from(rest);
+                }
+            }
+        }
+    }
+    p
+}
+
 fn prepend_path(dirs: &[&str]) {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
