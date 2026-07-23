@@ -185,7 +185,11 @@ fn resolve_config(handle: &AppHandle) -> Config {
         set_env_if_absent("UV_PYTHON_INSTALL_DIR", runtime.join("python"));
         set_env_if_absent("UV_CACHE_DIR", runtime.join("uv-cache"));
         set_env_if_absent("HF_HOME", app_data.join("models"));
-        let managed_python = runtime.join("venv/bin/python");
+        let managed_python = if cfg!(target_os = "windows") {
+            runtime.join("venv/Scripts/python.exe")
+        } else {
+            runtime.join("venv/bin/python")
+        };
         if std::env::var_os("AI_PYTHON").is_none() && managed_python.is_file() {
             std::env::set_var("AI_PYTHON", managed_python);
         }
@@ -213,6 +217,11 @@ fn resolve_config(handle: &AppHandle) -> Config {
                 ("UV_PATH", "uv"),
             ] {
                 if std::env::var_os(key).is_none() {
+                    let name = if cfg!(target_os = "windows") {
+                        format!("{name}.exe")
+                    } else {
+                        name.to_string()
+                    };
                     let cand = dir.join(name);
                     if cand.is_file() {
                         std::env::set_var(key, cand);
