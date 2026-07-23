@@ -43,7 +43,7 @@ import json
 import os
 import sys
 
-from pipeline import align, asr, assemble, cc, polish, protocol, separate, translate
+from pipeline import align, asr, assemble, cc, energy_gate, polish, protocol, separate, translate
 
 # tokenizer/romaji are imported lazily (inside the `reading` branch of
 # run_generate_subtitles below) rather than here at module scope: both pull
@@ -323,6 +323,18 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 separated=asr_audio == vocals_path,
             )
             source = "asr"
+            # Vocal-energy gate (energy_gate.py): only meaningful when we
+            # actually transcribed the separated vocals — the raw mix has
+            # music energy everywhere, so there'd be no signal to gate on.
+            # Runs BEFORE polish so the LLM never wastes tokens correcting
+            # hallucinated intro/interlude cues. `VOCAL_ENERGY_GATE=off` is
+            # the escape hatch.
+            if (
+                asr_audio == vocals_path
+                and raw_segments
+                and os.environ.get("VOCAL_ENERGY_GATE", "").strip().lower() != "off"
+            ):
+                raw_segments = energy_gate.filter_segments(raw_segments, vocals_path)
             if lyrics_polish and raw_segments:
                 # LyricWhiz-style LLM correction of the free transcript
                 # (polish.py). Timing is untouched — only each line's text
