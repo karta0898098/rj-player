@@ -4,8 +4,8 @@
   "identifier": "io.github.karta0898098.rjplayer",
   "build": {
     "frontendDist": "../frontend/dist",
-    "beforeDevCommand": "bash src-tauri/binaries/fetch-sidecars.sh && npm --prefix frontend run build",
-    "beforeBuildCommand": "bash src-tauri/binaries/fetch-sidecars.sh && npm --prefix frontend run build"
+    "beforeDevCommand": "bash -c 'export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"; cd \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" && bash src-tauri/binaries/fetch-sidecars.sh && npm --prefix frontend run build'",
+    "beforeBuildCommand": "bash -c 'export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"; cd \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" && bash src-tauri/binaries/fetch-sidecars.sh && npm --prefix frontend run build'"
   },
   "app": {
     "windows": [],
