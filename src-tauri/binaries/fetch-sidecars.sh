@@ -9,32 +9,31 @@
 # Repeat runs are a fast no-op once the files exist (set FORCE=1 to refresh).
 #
 # File names follow Tauri's externalBin convention: <name>-<target-triple>.
-# yt-dlp ships a single universal2 macOS build, reused for both mac arches.
+# yt-dlp ships a single universal2 macOS build; we keep only the arm64 copy.
 #
-# macOS only for now. Windows is NOT fetched yet — the same <name>-<triple>
-# structure extends to it in B6.7; see the commented WINDOWS block near the
-# bottom for the starting point (yt-dlp.exe + a static ffmpeg.exe).
+# Apple-silicon (arm64) only. Intel/x86_64 macOS is NOT supported — see the
+# git history if you ever need to re-add it. Windows is NOT fetched yet — the
+# same <name>-<triple> structure extends to it in B6.7; see the commented
+# WINDOWS block near the bottom for the starting point (yt-dlp.exe + ffmpeg.exe).
 #
 # Sources:
 #   yt-dlp : https://github.com/yt-dlp/yt-dlp  (official release, universal2)
-#   ffmpeg : https://ffmpeg.martin-riedl.de     (static macOS builds, per-arch)
+#   ffmpeg : https://ffmpeg.martin-riedl.de     (static macOS arm64 build)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 YTDLP_MACOS_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
 FFMPEG_ARM64_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
-FFMPEG_AMD64_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip"
 # uv (the managed-Python installer / dep resolver the Doctor drives, dsd §13.4).
 UV_ARM64_URL="https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz"
-UV_AMD64_URL="https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz"
 
-MAC_TRIPLES=("aarch64-apple-darwin" "x86_64-apple-darwin")
+MAC_TRIPLES=("aarch64-apple-darwin")
 
 # All outputs we expect to produce; used for the fast-path skip.
 OUTPUTS=(
-  "yt-dlp-aarch64-apple-darwin" "yt-dlp-x86_64-apple-darwin"
-  "ffmpeg-aarch64-apple-darwin" "ffmpeg-x86_64-apple-darwin"
-  "uv-aarch64-apple-darwin" "uv-x86_64-apple-darwin"
+  "yt-dlp-aarch64-apple-darwin"
+  "ffmpeg-aarch64-apple-darwin"
+  "uv-aarch64-apple-darwin"
 )
 
 all_present=1
@@ -66,7 +65,6 @@ fetch_ffmpeg() { # $1=url  $2=triple
   chmod +x "ffmpeg-$triple"
 }
 fetch_ffmpeg "$FFMPEG_ARM64_URL" "aarch64-apple-darwin"
-fetch_ffmpeg "$FFMPEG_AMD64_URL" "x86_64-apple-darwin"
 
 fetch_uv() { # $1=url  $2=triple
   local url="$1" triple="$2"
@@ -80,7 +78,6 @@ fetch_uv() { # $1=url  $2=triple
   chmod +x "uv-$triple"
 }
 fetch_uv "$UV_ARM64_URL" "aarch64-apple-darwin"
-fetch_uv "$UV_AMD64_URL" "x86_64-apple-darwin"
 
 # --- WINDOWS (B6.7 — not enabled yet) --------------------------------------
 # To add Windows, produce yt-dlp-x86_64-pc-windows-msvc.exe and

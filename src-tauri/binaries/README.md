@@ -20,20 +20,20 @@ bash src-tauri/binaries/fetch-sidecars.sh        # fetch if missing
 FORCE=1 bash src-tauri/binaries/fetch-sidecars.sh # re-download latest
 ```
 
-Produces (macOS, both arches):
+Produces (macOS, Apple silicon / arm64 only):
 
 ```
-yt-dlp-aarch64-apple-darwin   ffmpeg-aarch64-apple-darwin
-yt-dlp-x86_64-apple-darwin    ffmpeg-x86_64-apple-darwin
+yt-dlp-aarch64-apple-darwin   ffmpeg-aarch64-apple-darwin   uv-aarch64-apple-darwin
 ```
 
 ## Sources
 
 | Tool   | Source | Notes |
 |--------|--------|-------|
-| yt-dlp | [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp) releases (`yt-dlp_macos`) | Official, universal2 — reused for both mac arches |
-| ffmpeg | [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) | Static per-arch macOS builds (no external dylib deps) |
+| yt-dlp | [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp) releases (`yt-dlp_macos`) | Official, universal2 — we keep only the arm64 copy |
+| ffmpeg | [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) | Static macOS arm64 build (no external dylib deps) |
 
-macOS only for now. Windows is **not fetched yet** — the script is macOS-only;
+**Apple silicon (arm64) only** — Intel/x86_64 macOS is not supported. Windows is
+**not fetched yet** — the script is macOS-only;
 a commented `WINDOWS` block at the bottom notes the starting point (`yt-dlp.exe`
 + a static `ffmpeg.exe`) for when B6.7 adds cross-platform packaging.

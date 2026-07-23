@@ -75,15 +75,15 @@ build-back:
 build-back-release:
     cd backend && cargo build --release
 
-# Bundle the desktop app (release .app/.dmg via Tauri). Slow.
+# Bundle the desktop app (release .app/.dmg via Tauri). Slow. Apple-silicon only.
 [group('build')]
 bundle:
-    {{nvm}} cargo tauri build
+    {{nvm}} cargo tauri build --target aarch64-apple-darwin
 
 # Bundle the desktop app with the debug profile (faster to compile, bigger binary).
 [group('build')]
 bundle-debug:
-    {{nvm}} cargo tauri build --debug
+    {{nvm}} cargo tauri build --debug --target aarch64-apple-darwin
 
 # ── quality ─────────────────────────────────────────────────────────────────
 
