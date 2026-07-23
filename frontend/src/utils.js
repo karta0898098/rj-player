@@ -70,15 +70,29 @@ export const MAX_CUE_DISPLAY_MS = 8000;
 // active at `timeMs`: the cue with `start_ms <= timeMs < end_ms` (dsd.md
 // §6.2). Returns `null` when `timeMs` falls in a gap between cues, or
 // before/after every cue — the overlay renders nothing in that case.
+//
+// The search's correctness depends on the cues' [start_ms, end_ms) ranges
+// being sorted and non-overlapping. That doesn't always hold: the
+// MAX_CUE_DISPLAY_MS comment above documents Whisper occasionally assigning
+// a cue an end_ms that stretches well into later cues' start times. An
+// overlapping cue like that breaks the search's left/right decision — it can
+// make the search jump past every subsequent cue without ever matching one,
+// so everything from that point to the end of the video looks permanently
+// inactive/unhighlighted. Clamping each probed cue's end to no later than
+// the next cue's start_ms — for this search decision only, the returned cue
+// object's real end_ms is untouched — keeps the intervals non-overlapping so
+// the search stays correct regardless of how bad any individual end_ms is.
 export function findActiveCue(cues, timeMs) {
   let lo = 0;
   let hi = cues.length - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const cue = cues[mid];
+    const nextStart = mid + 1 < cues.length ? cues[mid + 1].start_ms : Infinity;
+    const effectiveEnd = Math.min(cue.end_ms, nextStart);
     if (timeMs < cue.start_ms) {
       hi = mid - 1;
-    } else if (timeMs >= cue.end_ms) {
+    } else if (timeMs >= effectiveEnd) {
       lo = mid + 1;
     } else {
       return cue;

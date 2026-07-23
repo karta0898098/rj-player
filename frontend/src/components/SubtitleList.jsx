@@ -80,15 +80,34 @@ export default function SubtitleList({
 
   // Auto-scroll the active row into view — only while `pinned` AND not
   // mid-edit (so the list doesn't yank away from the textarea you're typing
-  // in). `block: 'nearest'` only moves the list's own scroll container.
+  // in). `block: 'center'` (rather than 'nearest') re-centers the active row
+  // on every single cue change instead of only moving once the row falls off
+  // the visible edge — 'nearest' made the list sit still for many cues in a
+  // row and then jerk down by one row at a time, most noticeably once
+  // playback got deep enough into the list that the active row was
+  // perpetually right at the bottom edge.
   useEffect(() => {
     if (!pinned || edit || !activeRowRef.current) return;
     programmaticScrollRef.current = true;
-    activeRowRef.current.scrollIntoView({ block: 'nearest' });
-    const t = setTimeout(() => {
-      programmaticScrollRef.current = false;
-    }, 100);
-    return () => clearTimeout(t);
+    activeRowRef.current.scrollIntoView({ block: 'center' });
+    // Reset the guard once the browser has actually settled the scroll (and
+    // dispatched its resulting `scroll` event), rather than after a guessed
+    // wall-clock delay. A fixed setTimeout raced the real `scroll` event on
+    // large jumps (e.g. seeking far ahead, jumping many rows at once): the
+    // event could fire late enough to land after the timeout already reset
+    // the flag, get misread as a user-initiated scroll, and permanently
+    // un-pin auto-follow for no reason. Two rAFs reliably land after the
+    // current frame's scroll/paint work has been flushed.
+    let raf2 = null;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
   }, [activeId, pinned, edit]);
 
   // Focus + select the textarea when an edit starts.
@@ -113,7 +132,7 @@ export default function SubtitleList({
   function jumpToCurrent() {
     setPinned(true);
     if (activeRowRef.current) {
-      activeRowRef.current.scrollIntoView({ block: 'nearest' });
+      activeRowRef.current.scrollIntoView({ block: 'center' });
     }
   }
 
@@ -254,7 +273,29 @@ export default function SubtitleList({
         </div>
       )}
 
-      <div onScroll={handleScroll} className="subtitle-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+      <div
+        onScroll={handleScroll}
+        className="subtitle-scroll"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          // Breathing room so the first/last row (and the auto-scroll
+          // highlight below) never sits flush against the panel's edge.
+          // The bottom padding is deliberately generous, not just cosmetic:
+          // without it, `scrollIntoView({block:'center'})` can't actually
+          // center a cue near the end of the list -- the browser can only
+          // scroll up to `scrollHeight - clientHeight`, so the last few
+          // cues would stay pinned to the bottom edge no matter what block
+          // alignment is requested. Padding extends the scrollable range so
+          // even the final cue can be centered like every other one. (A
+          // fixed px value, not a percentage -- CSS resolves vertical
+          // padding percentages against the containing block's *width*, not
+          // its height, which would make this unrelated to the scroll
+          // distance it's meant to cover.)
+          padding: '8px 0 200px',
+        }}
+      >
         {!hasCues ? (
           <div
             style={{

@@ -98,14 +98,19 @@ export default function App() {
   // included in fullscreen instead of just the bare <video>.
   const stageContainerRef = useRef(null);
   // Set (just before) advancing to the next playlist item on `ended` (see
-  // handleVideoEnded) and consumed by handleCanPlay once the freshly-loaded
-  // next video is ready to play -- the only signal that distinguishes an
-  // auto-advance load from every other load path (initial load, manual
-  // playlist click, etc.), none of which should auto-play. Deliberately NOT
-  // reset by resetPlaybackState/selectPlaylistItem -- it must survive their
-  // state resets so it's still true by the time the new video's `canplay`
-  // fires.
+  // handleVideoEnded); consumed by handleLoadedMetadata to decide whether to
+  // skip the resume-position restore (an auto-advance always starts the next
+  // track from the beginning, every other load resumes where you left off).
+  // Deliberately NOT reset by resetPlaybackState/selectPlaylistItem -- it
+  // must survive their state resets so it's still true when the new video's
+  // `loadedmetadata` fires.
   const autoAdvanceRef = useRef(false);
+  // Set just before any load that should auto-play once ready (auto-advance
+  // AND a manual click from the library/playlist) and consumed by
+  // handleCanPlay once the freshly-loaded video has buffered enough to
+  // start. Separate from autoAdvanceRef because the two loads still differ
+  // on resume-position handling above.
+  const shouldAutoplayRef = useRef(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   // First-run setup wizard (dsd.md §13.5) — desktop app only, until completed once.
   const [showWizard, setShowWizard] = useState(() => {
@@ -314,8 +319,10 @@ export default function App() {
   // Playlist row click -- switches playback to that video regardless of its
   // current status (finalizeReady already handles both "already ready" and
   // "still mid-pipeline" gracefully, reopening the WS in the latter case).
+  // A user-initiated selection should always start playing once it's ready.
   async function selectPlaylistItem(id) {
     if (!id || id === videoId) return;
+    shouldAutoplayRef.current = true;
     resetPlaybackState();
     setLoadStatus('connecting');
     setVideoId(id);
@@ -1021,18 +1028,24 @@ export default function App() {
     const nextId = idx >= 0 && idx + 1 < playlistIds.length ? playlistIds[idx + 1] : null;
     if (nextId) {
       autoAdvanceRef.current = true;
+      shouldAutoplayRef.current = true;
       selectPlaylistItem(nextId);
     }
   }
 
   // <video> canplay: fires once the freshly-loaded video (any src change) has
-  // buffered enough to start. Only auto-plays when this load was itself an
-  // auto-advance (see handleVideoEnded) -- every other load (initial load,
-  // manual playlist click, resume-from-library, etc.) leaves the video
-  // paused exactly as before this feature existed.
+  // buffered enough to start. Auto-plays whenever this load was flagged as
+  // one that should (auto-advance to the next track, or a manual click from
+  // the library/playlist) -- everything else (e.g. the very first load on
+  // app start) leaves the video paused as before.
   function handleCanPlay() {
-    if (autoAdvanceRef.current) {
-      autoAdvanceRef.current = false;
+    // Both flags have already had their one chance to be read by this point
+    // (autoAdvanceRef by handleLoadedMetadata, just before this fires) --
+    // clear autoAdvanceRef here too so it doesn't stay stuck true and make
+    // every later load (including plain manual clicks) skip resume-restore.
+    autoAdvanceRef.current = false;
+    if (shouldAutoplayRef.current) {
+      shouldAutoplayRef.current = false;
       videoRef.current?.play().catch(() => {});
     }
   }
@@ -1279,7 +1292,13 @@ export default function App() {
           // (matches the wrapper's 44px top + 24px bottom padding above).
           // Combined with the subtitle sidebar's absolutely-positioned scroll
           // body (SidebarPanel.jsx), a long cue list scrolls inside its own
-          // pane instead of stretching the whole card.
+          // pane instead of stretching the whole card. Pinned to the full
+          // cap in both views for a stable window size — trying this out
+          // instead of leaving player view auto-height (hugging the video's
+          // own aspect-ratio size); the tradeoff is non-16:9 videos now get
+          // letterboxed within a fixed-height card rather than the card
+          // itself shrinking/growing to match.
+          height: 'calc(100vh - 68px)',
           maxHeight: 'calc(100vh - 68px)',
           borderRadius: 18,
           overflow: 'hidden',
@@ -1354,10 +1373,15 @@ export default function App() {
             />
           </div>
         ) : (
-        /* Two-column body (README change #3): LEFT = channel row + video +
+        /* Outer flex:1 column so the row below centers vertically in the
+           now fixed-height card (see the card's `height` above) instead of
+           sticking to the top with dead space below whenever the video is
+           shorter than the available room. */
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        {/* Two-column body (README change #3): LEFT = channel row + video +
            controls (unchanged behavior), RIGHT = the clickable subtitle-list
            sidebar. minHeight:0 lets the sidebar's own overflowY:auto scroll
-           within the row's stretched height instead of growing it. */
+           within the row's stretched height instead of growing it. */}
         <div style={{ display: 'flex', minHeight: 0 }}>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {showChannelRow && <VideoInfo theme={theme} channelName={channelName} />}
@@ -1440,6 +1464,7 @@ export default function App() {
               )}
             </SidebarPanel>
           )}
+        </div>
         </div>
         )}
       </div>
