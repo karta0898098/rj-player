@@ -542,18 +542,29 @@ fn requirements_path(config: &Config) -> PathBuf {
         .join("requirements.txt")
 }
 
+/// How many of the most recent streamed lines to fold into a failure's error
+/// string — enough to show the actual resolver/interpreter error, not just
+/// the bare exit code (which for `uv` is almost always a generic 1/2).
+const TAIL_LINES_ON_FAILURE: usize = 20;
+
 /// Run `cmd`, streaming merged stdout+stderr lines as `DoctorEvent::Log`. Errors
-/// if the process fails to start or exits non-zero.
+/// if the process fails to start or exits non-zero; the error includes the
+/// last few streamed lines so the real cause is visible without re-running
+/// the command by hand.
 async fn run_streaming(hub: &DoctorHub, fix: &str, mut cmd: Command) -> Result<(), String> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("failed to start: {e}"))?;
 
+    let tail = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::with_capacity(
+        TAIL_LINES_ON_FAILURE,
+    )));
+
     let mut readers = Vec::new();
     if let Some(out) = child.stdout.take() {
-        readers.push(spawn_line_reader(hub.tx.clone(), fix.to_string(), out));
+        readers.push(spawn_line_reader(hub.tx.clone(), fix.to_string(), out, tail.clone()));
     }
     if let Some(err) = child.stderr.take() {
-        readers.push(spawn_line_reader(hub.tx.clone(), fix.to_string(), err));
+        readers.push(spawn_line_reader(hub.tx.clone(), fix.to_string(), err, tail.clone()));
     }
 
     let status = child.wait().await.map_err(|e| format!("wait failed: {e}"))?;
@@ -563,7 +574,16 @@ async fn run_streaming(hub: &DoctorHub, fix: &str, mut cmd: Command) -> Result<(
     if status.success() {
         Ok(())
     } else {
-        Err(format!("exited with status {}", status.code().unwrap_or(-1)))
+        let lines: Vec<String> = tail.lock().unwrap_or_else(|p| p.into_inner()).iter().cloned().collect();
+        if lines.is_empty() {
+            Err(format!("exited with status {}", status.code().unwrap_or(-1)))
+        } else {
+            Err(format!(
+                "exited with status {}:\n{}",
+                status.code().unwrap_or(-1),
+                lines.join("\n")
+            ))
+        }
     }
 }
 
@@ -571,6 +591,7 @@ fn spawn_line_reader<R>(
     tx: broadcast::Sender<DoctorEvent>,
     fix: String,
     pipe: R,
+    tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
 ) -> tokio::task::JoinHandle<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -578,6 +599,13 @@ where
     tokio::spawn(async move {
         let mut lines = BufReader::new(pipe).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            {
+                let mut tail = tail.lock().unwrap_or_else(|p| p.into_inner());
+                if tail.len() == TAIL_LINES_ON_FAILURE {
+                    tail.pop_front();
+                }
+                tail.push_back(line.clone());
+            }
             let _ = tx.send(DoctorEvent::Log {
                 fix: fix.clone(),
                 line,

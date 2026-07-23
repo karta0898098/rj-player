@@ -1,6 +1,6 @@
 {
   "productName": "rj-player",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "io.github.karta0898098.rjplayer",
   "build": {
     "frontendDist": "../frontend/dist",

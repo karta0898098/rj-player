@@ -1,4 +1,12 @@
 faster-whisper==1.2.1
+# faster-whisper's native deps are unpinned upstream, so a resolve done fresh
+# on an end-user machine can land on a ctranslate2/onnxruntime/numpy
+# combination that isn't actually compatible (observed: Doctor's install_deps
+# step failing with a bare "exited with status 2", no readable cause without
+# re-running by hand). Pin to the versions verified working in the repo venv.
+ctranslate2==4.8.1
+onnxruntime==1.27.0
+numpy==2.4.6
 fugashi[unidic-lite]==1.5.2
 pykakasi==2.3.0
 anthropic==0.117.0
