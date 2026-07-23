@@ -610,6 +610,7 @@ export default function SubtitleList({
     <>
       {hasCues && (onExport || onEditCue) && (
         <div
+          className="rj-hscroll"
           style={{
             flexShrink: 0,
             display: 'flex',
@@ -617,6 +618,11 @@ export default function SubtitleList({
             gap: 6,
             padding: '6px 12px',
             borderBottom: `1px solid ${theme.hairline}`,
+            // When the chips + edit + export buttons don't all fit (e.g. both
+            // provenance badges present), scroll horizontally instead of
+            // clipping — items keep their natural width (flexShrink:0/nowrap).
+            overflowX: 'auto',
+            overflowY: 'hidden',
           }}
         >
           {renderProvenanceChip(sourceChipInfo, 'source-chip')}

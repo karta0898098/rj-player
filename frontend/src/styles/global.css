@@ -194,6 +194,16 @@ button {
   background: rgba(127, 127, 127, 0.65);
 }
 
+/* Horizontal-scroll toolbar (SubtitleList's header bar) — scrolls when its
+   provenance chips + edit + export buttons overflow, with the scrollbar hidden
+   so the compact bar stays clean (swipe / shift-scroll to reach the rest). */
+.rj-hscroll {
+  scrollbar-width: none;
+}
+.rj-hscroll::-webkit-scrollbar {
+  display: none;
+}
+
 /* Video-library grid cards (LibraryView.jsx). The action overlay on the
    thumbnail (play / add-to-playlist / regenerate / delete) is hidden until
    the card is hovered, so the poster stays clean while browsing. */
