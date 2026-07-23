@@ -194,6 +194,47 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             raw_segments, duration_ms = cc.load_cc(cc_path, audio_path)
             protocol.log(f"[cc] using official {source_lang} CC ({len(raw_segments)} cues)")
             source = "cc"
+        elif (
+            do_translate
+            and target_cc_path
+            and os.path.exists(target_cc_path)
+            and profile_for(source_lang)["reading"]
+        ):
+            # A3 (dsd.md §12.7): no source-language CC, but an official target
+            # (Chinese) CC exists and the source is a reading language (ja).
+            # Rather than free-transcribe the audio (slow, and garbles sung
+            # Japanese), BACK-TRANSLATE the target CC into the source language
+            # to synthesise the source + romaji layer. The target CC still
+            # becomes the translation layer below (its own `target_cc_path`
+            # merge branch), so this costs exactly ONE LLM call (target ->
+            # source) and NO ASR. The synthesised source is AI-generated (marked
+            # `source == "cc_reverse"`), NOT the real lyrics -- the only way to
+            # get the true source text is a manual source CC or reference lyrics.
+            zh_segments, duration_ms = cc.load_cc(target_cc_path, audio_path)
+            zh_texts = [s["text"] for s in zh_segments]
+            # translate_segments(texts, target_lang, source_lang): here we go the
+            # other way -- Chinese (`target_lang`) INTO Japanese (`source_lang`).
+            ja_texts, back_degraded = translate.translate_segments(
+                zh_texts,
+                source_lang,
+                target_lang,
+                on_progress=lambda pct: emit_fn(
+                    {"id": req_id, "event": "progress", "stage": "asr", "pct": pct}
+                ),
+            )
+            if back_degraded:
+                protocol.log(
+                    "[cc_reverse] back-translation degraded; source layer may be incomplete"
+                )
+            raw_segments = [
+                {"start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": ja}
+                for s, ja in zip(zh_segments, ja_texts)
+            ]
+            protocol.log(
+                f"[cc_reverse] synthesised {source_lang} source from official "
+                f"{target_lang} CC ({len(raw_segments)} cues), no ASR"
+            )
+            source = "cc_reverse"
         else:
             raw_segments, duration_ms = asr.transcribe(
                 audio_path,

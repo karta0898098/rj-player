@@ -162,13 +162,16 @@ pub async fn run_pipeline(
     // the selected source language: a CC in a *different* language (e.g. an
     // English CC on a `ja` video -- as an older buggy fetch could persist via a
     // stale `meta.source_cc_lang`) is a translation, not a transcript, and
-    // would yield the wrong source text. On mismatch we drop the CC so Whisper
-    // ASR runs against `source_lang` instead. A `None` `source_cc_lang` (videos
-    // from before that field existed) counts as a match, since back then
-    // `cc.srt` was always the source_lang track. This also lets a plain
-    // "重新產生字幕" fix an already-downloaded, mis-sourced video without a
-    // re-download. Beyond this, `ai/worker.py` enforces the full precedence
-    // (reference_lyrics > CC > Whisper ASR).
+    // would yield the wrong source text. On mismatch we drop the CC as the
+    // source; the worker then either back-translates an official target
+    // (Chinese) CC into `source_lang` (A3, when one exists + `source_lang` is a
+    // reading language) or free-transcribes with Whisper -- see `ai/worker.py`.
+    // A `None` `source_cc_lang` (videos from before that field existed) counts
+    // as a match, since back then `cc.srt` was always the source_lang track.
+    // This also lets a plain "重新產生字幕" fix an already-downloaded,
+    // mis-sourced video without a re-download. Beyond this, `ai/worker.py`
+    // enforces the full precedence (reference_lyrics > source CC > target-CC
+    // back-translate > Whisper ASR).
     let source_cc_mismatches = meta
         .source_cc_lang
         .as_deref()

@@ -12,6 +12,9 @@ const SOURCE_CHIP_INFO = {
   cc: { label: '官方字幕', title: '字幕來源：影片內建人工字幕（未經 AI 辨識）', official: true },
   align: { label: '歌詞對齊', title: '字幕來源：依參考歌詞做時間軸對齊（未經 AI 辨識）', official: true },
   asr: { label: 'AI 辨識', title: '字幕來源：AI 語音辨識', official: false },
+  // A3: no source-language CC, so the source (日文) layer was AI-translated
+  // BACK from the official Chinese CC — not the original lyrics.
+  cc_reverse: { label: 'AI 日譯', title: '字幕來源：由官方中文字幕 AI 反向翻譯成日文（非原曲歌詞）', official: false },
 };
 
 const TARGET_CHIP_INFO = {
