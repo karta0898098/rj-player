@@ -34,6 +34,9 @@ const MODEL_INFO = {
 const FIX_TO_CHECK = {
   install_runtime: 'python_runtime',
   install_deps: 'ai_deps',
+  // Only present when device=cuda (the Windows GPU option) — the wizard's
+  // auto-chain then covers it like any other required fix.
+  install_cuda_deps: 'cuda_runtime',
   download_model: 'whisper_model',
 };
 const PROVIDER_LABELS = { gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Anthropic' };

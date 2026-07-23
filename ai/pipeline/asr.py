@@ -9,11 +9,17 @@ general) stays instant -- the model is only pulled into memory (and, on
 first ever run, downloaded from HuggingFace, ~500MB for `small`) when a
 `generate_subtitles` request actually needs it.
 
-`compute_type`/`device` default to "int8"/"cpu" (Apple Silicon has no CUDA);
-both are configurable via the settings page (dsd.md §13.7).
+`compute_type`/`device` default to "int8"/"cpu"; both are configurable via
+the settings page (dsd.md §13.7). On Windows with an NVIDIA GPU, `device`
+may be "cuda" — the CUDA runtime wheels (requirements-cuda.txt, installed by
+the Doctor's install_cuda_deps fix) provide the cuBLAS/cuDNN DLLs, and
+`_add_cuda_dll_dirs` below puts them on the DLL search path before the model
+loads. macOS stays cpu-only (Apple Silicon has no CUDA).
 """
 from __future__ import annotations
 
+import os
+import sys
 from typing import Callable, Optional, TypedDict
 
 from . import protocol
@@ -38,10 +44,36 @@ class Segment(TypedDict):
     text: str
 
 
+def _add_cuda_dll_dirs() -> None:
+    """Make the pip-installed NVIDIA runtime DLLs findable (Windows only).
+
+    ctranslate2's CUDA backend loads cublas/cudnn DLLs at model-load time via
+    the normal Windows DLL search, which does NOT look inside pip packages.
+    The `nvidia-cublas-cu12`/`nvidia-cudnn-cu12` wheels (requirements-cuda.txt)
+    put their DLLs under `site-packages/nvidia/<lib>/bin`, so register those
+    dirs both via `os.add_dll_directory` and a PATH prepend (dependent-DLL
+    resolution still walks PATH) before the first CUDA model load.
+    """
+    if sys.platform != "win32":
+        return
+    import importlib.util
+
+    for mod in ("nvidia.cublas", "nvidia.cudnn"):
+        spec = importlib.util.find_spec(mod)
+        if spec is None or not spec.submodule_search_locations:
+            continue
+        bin_dir = os.path.join(list(spec.submodule_search_locations)[0], "bin")
+        if os.path.isdir(bin_dir):
+            os.add_dll_directory(bin_dir)
+            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+
 def _get_model(model_size: str, compute_type: str = "int8", device: str = "cpu"):
     key = (model_size, compute_type, device)
     model = _model_cache.get(key)
     if model is None:
+        if device == "cuda":
+            _add_cuda_dll_dirs()
         # Imported lazily: importing faster_whisper/ctranslate2 has a
         # non-trivial cost we don't want to pay before the first real job.
         from faster_whisper import WhisperModel

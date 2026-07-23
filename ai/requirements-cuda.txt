@@ -1,0 +1,11 @@
+# CUDA runtime deps for device=cuda (Windows + NVIDIA GPU) — installed by the
+# Doctor's `install_cuda_deps` fix, deliberately NOT part of requirements.txt
+# so CPU-only installs never pay the multi-hundred-MB download.
+#
+# ctranslate2 4.x links against CUDA 12 + cuDNN 9 at runtime; these pip wheels
+# ship the needed cuBLAS/cuDNN DLLs, and ai/pipeline/asr.py adds their bin/
+# dirs to the DLL search path before loading a model with device=cuda (the
+# user still needs a normal NVIDIA driver installed — that part can't come
+# from pip).
+nvidia-cublas-cu12==12.*
+nvidia-cudnn-cu12==9.*

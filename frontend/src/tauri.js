@@ -86,6 +86,15 @@ export async function setComputeType(computeType) {
   await invoke('set_compute_type', { computeType });
 }
 
+/**
+ * Persist the faster-whisper device — `cpu`, or `cuda` on Windows with an
+ * NVIDIA GPU (Tauri only). No-op in a browser.
+ */
+export async function setDevice(device) {
+  if (!isTauri()) return;
+  await invoke('set_device', { device });
+}
+
 /** Persist the Whisper sampling temperature (Tauri only). No-op in a browser. */
 export async function setWhisperTemperature(temperature) {
   if (!isTauri()) return;

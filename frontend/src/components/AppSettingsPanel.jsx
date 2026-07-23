@@ -1,14 +1,22 @@
 import { useEffect, useState } from 'react';
 import { ACCENT } from '../theme.js';
-import { getCachedModels, deleteCachedModel, clearCachedModels, getStorageInfo } from '../api.js';
-import { getSettings, setComputeType, revealInFinder } from '../tauri.js';
+import { getCachedModels, deleteCachedModel, clearCachedModels, getStorageInfo, getDoctor, startDoctorFix } from '../api.js';
+import { getSettings, setComputeType, setDevice, getPlatform, revealInFinder } from '../tauri.js';
 import ConfirmDialog from './ConfirmDialog.jsx';
 import CustomSelect from './CustomSelect.jsx';
 
 const COMPUTE_TYPES = [
   { value: 'int8', label: 'int8（最省資源，建議）' },
   { value: 'int8_float16', label: 'int8_float16' },
+  { value: 'float16', label: 'float16（GPU 建議）' },
   { value: 'float32', label: 'float32（最高精度）' },
+];
+
+// Only Windows machines can have CUDA (Apple Silicon has none), so the cuda
+// option is offered there alone; macOS/web keep a read-only "cpu" row.
+const DEVICE_OPTIONS = [
+  { value: 'cpu', label: 'cpu（預設）' },
+  { value: 'cuda', label: 'cuda（NVIDIA GPU 加速）' },
 ];
 
 const NAV_DEFS = [
@@ -43,8 +51,14 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
   const [activeTab, setActiveTab] = useState('appearance');
 
   const [computeType, setComputeTypeState] = useState('int8');
-  const [device, setDevice] = useState('cpu');
+  const [device, setDeviceState] = useState('cpu');
   const [savingCompute, setSavingCompute] = useState(false);
+  const [savingDevice, setSavingDevice] = useState(false);
+  const [platform, setPlatform] = useState('web'); // 'macos' | 'windows' | 'web'
+  // CUDA environment status shown under the device row when device=cuda:
+  // null | {phase:'checking'} | {phase:'installing', line} | {phase:'ok'}
+  // | {phase:'error', message}
+  const [cudaState, setCudaState] = useState(null);
 
   const [videosDir, setVideosDir] = useState(null);
   const [videosSizeBytes, setVideosSizeBytes] = useState(0);
@@ -84,6 +98,10 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
   }
 
   useEffect(() => {
+    getPlatform().then(setPlatform).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     setError('');
     (async () => {
@@ -91,7 +109,12 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
         const settings = await getSettings();
         if (settings) {
           setComputeTypeState(settings.compute_type);
-          setDevice(settings.device);
+          setDeviceState(settings.device);
+          // Already on cuda? Surface the environment status (cached backend-
+          // side after the first success) without kicking off any install.
+          if (settings.device === 'cuda' && (await getPlatform()) === 'windows') {
+            checkCudaRuntime({ autoInstall: false });
+          }
         }
       } catch {
         /* keep the panel usable even if reading settings fails */
@@ -99,6 +122,7 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
     })();
     refreshModels();
     refreshStorage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
@@ -124,6 +148,85 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
     } finally {
       setSavingCompute(false);
     }
+  }
+
+  async function handleDeviceChange(value) {
+    setSavingDevice(true);
+    setError('');
+    try {
+      await setDevice(value);
+      setDeviceState(value);
+      if (value === 'cuda') {
+        // Fire-and-forget: the status row below the select tracks progress.
+        checkCudaRuntime({ autoInstall: true });
+      } else {
+        setCudaState(null);
+      }
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally {
+      setSavingDevice(false);
+    }
+  }
+
+  // Ask the Doctor about the cuda_runtime check; with `autoInstall`, a missing
+  // CUDA runtime (fixable via install_cuda_deps) kicks off the install and
+  // tracks its progress over the /api/doctor/events WebSocket — the same fix
+  // machinery the setup wizard uses.
+  async function checkCudaRuntime({ autoInstall }) {
+    setCudaState({ phase: 'checking' });
+    try {
+      const report = await getDoctor();
+      const check = report.checks.find((c) => c.id === 'cuda_runtime');
+      if (!check) {
+        // Backend doesn't consider device=cuda (e.g. env override) — nothing to show.
+        setCudaState(null);
+        return;
+      }
+      if (check.status === 'ok') {
+        setCudaState({ phase: 'ok' });
+      } else if (check.fix === 'install_cuda_deps' && autoInstall) {
+        installCudaDeps();
+      } else {
+        setCudaState({ phase: 'error', message: check.detail || 'CUDA 環境檢查未通過' });
+      }
+    } catch (err) {
+      setCudaState({ phase: 'error', message: String(err?.message || err) });
+    }
+  }
+
+  // Run the install_cuda_deps Doctor fix, streaming progress until done, then
+  // re-check (deps installed ≠ GPU visible — the recheck settles which).
+  function installCudaDeps() {
+    setCudaState({ phase: 'installing', line: '' });
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/doctor/events`);
+    const fail = (message) => {
+      try { ws.close(); } catch { /* noop */ }
+      setCudaState({ phase: 'error', message });
+    };
+    ws.onopen = () => {
+      // POST only once the socket is listening, so no progress line is lost.
+      startDoctorFix('install_cuda_deps').catch((err) => fail(String(err?.message || err)));
+    };
+    ws.onerror = () => fail('無法連線安裝進度伺服器，請重試。');
+    ws.onmessage = async (e) => {
+      let ev;
+      try {
+        ev = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      if (ev.fix !== 'install_cuda_deps') return;
+      if (ev.type === 'log') {
+        setCudaState({ phase: 'installing', line: ev.line });
+      } else if (ev.type === 'failed') {
+        fail(ev.error || '安裝失敗，請重試。');
+      } else if (ev.type === 'done') {
+        try { ws.close(); } catch { /* noop */ }
+        checkCudaRuntime({ autoInstall: false });
+      }
+    };
   }
 
   async function performDelete(target) {
@@ -175,6 +278,10 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
     whiteSpace: 'nowrap',
   };
   const sectionTitleStyle = { fontSize: 12.5, fontWeight: 700, color: theme.textPrimary, whiteSpace: 'nowrap' };
+  // Windows shows Explorer's name, not Finder's (backend reveal_in_finder
+  // already handles both OSes — only this label was hardcoded).
+  const revealLabel =
+    platform === 'windows' ? '在檔案總管中顯示' : platform === 'macos' ? '在 Finder 中顯示' : '開啟資料夾';
   const hintTextStyle = { fontSize: 11.5, color: theme.textTertiary, lineHeight: 1.6 };
   const segBase = { flex: 1, textAlign: 'center', padding: '8px 4px', borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: 'pointer' };
   // ACCENT (#e0453f = rgb(224,69,63)) tinted nav-active background, per the
@@ -376,10 +483,73 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
                 </div>
                 <div style={rowStyle}>
                   <span style={{ fontSize: 12, color: theme.textSecondary, flexShrink: 0, width: 90 }}>Device</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: theme.textTertiary }}>
-                    {device}（macOS 唯一選項，Apple Silicon 無 Metal 加速）
-                  </span>
+                  {platform === 'windows' ? (
+                    <CustomSelect
+                      theme={theme}
+                      value={device}
+                      disabled={savingDevice}
+                      onChange={handleDeviceChange}
+                      options={DEVICE_OPTIONS}
+                      ariaLabel="Device"
+                      style={{ flex: 1, width: 'auto', background: theme.inputBg, border: 'none', fontWeight: 600 }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: 12, fontWeight: 600, color: theme.textTertiary }}>
+                      {device}（macOS 唯一選項，Apple Silicon 無 Metal 加速）
+                    </span>
+                  )}
                 </div>
+                {platform === 'windows' && device === 'cuda' && cudaState && (
+                  <div
+                    style={{
+                      fontSize: 11.5,
+                      lineHeight: 1.6,
+                      borderRadius: 8,
+                      padding: '8px 10px',
+                      background:
+                        cudaState.phase === 'error'
+                          ? 'rgba(255,107,98,0.12)'
+                          : cudaState.phase === 'ok'
+                            ? 'rgba(52,199,89,0.12)'
+                            : theme.chipBg,
+                      color:
+                        cudaState.phase === 'error'
+                          ? '#ff6b62'
+                          : cudaState.phase === 'ok'
+                            ? '#34c759'
+                            : theme.textSecondary,
+                    }}
+                  >
+                    {cudaState.phase === 'checking' && '正在檢查 CUDA 環境…'}
+                    {cudaState.phase === 'ok' && '✓ CUDA 環境就緒，字幕生成將使用 GPU 加速。'}
+                    {cudaState.phase === 'error' && cudaState.message}
+                    {cudaState.phase === 'installing' && (
+                      <>
+                        <div>正在安裝 CUDA 執行期依賴（cuBLAS/cuDNN）…</div>
+                        {cudaState.line && (
+                          <div
+                            style={{
+                              fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace',
+                              fontSize: 10.5,
+                              color: theme.textTertiary,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {cudaState.line}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+                {platform === 'windows' && (
+                  <div style={hintTextStyle}>
+                    cuda 需要 NVIDIA GPU 與顯示卡驅動；首次切換會自動下載 CUDA 執行期依賴（數百 MB）。
+                    使用 GPU 時建議將 Compute type 改為 float16。
+                  </div>
+                )}
               </div>
             )}
 
@@ -417,7 +587,7 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
                     disabled={!videosDir}
                     style={smallBtnStyle}
                   >
-                    在 Finder 中顯示
+                    {revealLabel}
                   </button>
                 </div>
                 <div style={hintTextStyle}>已下載的影片、字幕與縮圖都存放在這裡（共 {formatBytes(videosSizeBytes)}）。</div>
@@ -461,7 +631,7 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
                       {hfHome}
                     </span>
                     <button type="button" onClick={() => revealInFinder(hfHome)} style={smallBtnStyle}>
-                      在 Finder 中顯示
+                      {revealLabel}
                     </button>
                   </div>
                 )}

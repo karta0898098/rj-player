@@ -36,6 +36,7 @@ pub fn run() {
         llm_key_present,
         set_whisper_model,
         set_compute_type,
+        set_device,
         set_whisper_temperature,
         get_settings,
         reveal_in_finder,
@@ -418,7 +419,7 @@ fn set_whisper_model(app: tauri::AppHandle, model: String) -> Result<(), String>
 }
 
 /// Persist the chosen faster-whisper `compute_type` (dsd.md §13.7's settings
-/// page: `int8` / `int8_float16` / `float32`).
+/// page: `int8` / `int8_float16` / `float16` / `float32`).
 #[tauri::command]
 fn set_compute_type(app: tauri::AppHandle, compute_type: String) -> Result<(), String> {
     write_setting(
@@ -427,6 +428,22 @@ fn set_compute_type(app: tauri::AppHandle, compute_type: String) -> Result<(), S
         serde_json::Value::String(compute_type.clone()),
         "WHISPER_COMPUTE_TYPE",
         &compute_type,
+    )
+}
+
+/// Persist the chosen faster-whisper `device` (dsd.md §13.7's settings page:
+/// `cpu`, or `cuda` on Windows machines with an NVIDIA GPU). The settings
+/// panel only offers `cuda` on Windows; macOS stays `cpu`-only (no CUDA on
+/// Apple Silicon). Takes effect on the next generation job — the backend
+/// reads `WHISPER_DEVICE` live per job (`Config::live_device`), no restart.
+#[tauri::command]
+fn set_device(app: tauri::AppHandle, device: String) -> Result<(), String> {
+    write_setting(
+        &app,
+        "device",
+        serde_json::Value::String(device.clone()),
+        "WHISPER_DEVICE",
+        &device,
     )
 }
 
@@ -447,8 +464,7 @@ fn set_whisper_temperature(app: tauri::AppHandle, temperature: f32) -> Result<()
 /// override wins over the persisted `settings.json` value, which in turn
 /// wins over the same built-in defaults `backend/src/config.rs` uses — so
 /// the page shows the truth even if a value was changed without a restart,
-/// and something sane before `settings.json` exists at all. `device` has no
-/// setter (mac is `cpu`-only today) but is still reported for display.
+/// and something sane before `settings.json` exists at all.
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;

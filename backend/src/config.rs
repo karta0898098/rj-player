@@ -72,10 +72,12 @@ pub struct Config {
     /// `generate_subtitles` RPC params. Env: `WHISPER_COMPUTE_TYPE`. TOML:
     /// `[ai] compute_type`. (default `int8` — CPU-recommended).
     pub compute_type: String,
-    /// faster-whisper `device` (dsd.md §13.7). Apple Silicon has no CUDA, so
-    /// `cpu` is the only supported value on mac today; kept configurable for
-    /// a future Windows `cuda` option. Env: `WHISPER_DEVICE`. TOML:
-    /// `[ai] device`. (default `cpu`).
+    /// faster-whisper `device` (dsd.md §13.7): `cpu`, or `cuda` on Windows
+    /// with an NVIDIA GPU (the settings page only offers `cuda` there; Apple
+    /// Silicon has no CUDA so mac stays `cpu`-only). The Doctor's
+    /// `cuda_runtime` check + `install_cuda_deps` fix cover the extra NVIDIA
+    /// wheels cuda needs. Env: `WHISPER_DEVICE`. TOML: `[ai] device`.
+    /// (default `cpu`).
     pub device: String,
     /// Forces a translation LLM provider (`gemini`|`openai`|`anthropic`);
     /// `None` lets the AI worker auto-detect from whichever API key is

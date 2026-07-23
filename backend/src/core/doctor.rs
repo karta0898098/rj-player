@@ -18,6 +18,7 @@ use tokio::process::Command;
 use tokio::sync::broadcast;
 
 use crate::config::Config;
+use crate::core::process::HideConsole;
 
 /// A check's state. `missing` = required-but-not-installed (red); `absent` =
 /// optional-and-not-provided, e.g. an LLM key (grey); `broken` = present but
@@ -95,6 +96,18 @@ pub async fn run(config: &Config) -> DoctorReport {
         detail: None,
     });
 
+    // 2b. CUDA runtime — only when the user selected device=cuda (dsd.md
+    //     §13.7's Windows GPU option). Two layers: the NVIDIA runtime wheels
+    //     (cuBLAS/cuDNN) must be installed into the managed venv (cheap
+    //     sentinel-file test, fixable via `install_cuda_deps`), and a
+    //     CUDA-capable GPU must actually be visible to ctranslate2 (a probe
+    //     through the managed python, cached for the life of the process once
+    //     it succeeds — a GPU won't vanish mid-run). Skipped entirely for
+    //     device=cpu so CPU users never pay for or see any of this.
+    if config.live_device() == "cuda" {
+        checks.push(cuda_check(managed_venv.as_deref(), deps_ok).await);
+    }
+
     // 3/4. Bundled tools actually run? (No user `fix` — a missing sidecar is a
     //      packaging bug, not something the user installs.) Run concurrently:
     //      each already retries internally, so sequencing them would double
@@ -145,6 +158,75 @@ pub async fn run(config: &Config) -> DoctorReport {
 
 fn nonempty(opt: &Option<String>) -> bool {
     opt.as_deref().is_some_and(|s| !s.is_empty())
+}
+
+/// The sentinel `fix_install_cuda_deps` writes after the NVIDIA wheels land
+/// (same pattern as `install_deps`' `.rj-deps-ok`).
+const CUDA_DEPS_SENTINEL: &str = ".rj-cuda-deps-ok";
+
+/// The `cuda_runtime` check for device=cuda: NVIDIA wheels installed, and a
+/// GPU actually visible. `deps_ok` gates the fix — installing CUDA wheels
+/// into a venv that doesn't exist yet can't work, so the fix only surfaces
+/// once `ai_deps` is in place.
+async fn cuda_check(venv: Option<&std::path::Path>, deps_ok: bool) -> DoctorCheck {
+    let cuda_deps_ok = venv.is_some_and(|v| v.join(CUDA_DEPS_SENTINEL).is_file());
+    if !cuda_deps_ok {
+        return DoctorCheck {
+            id: "cuda_runtime",
+            label: "CUDA 加速 (NVIDIA GPU)".into(),
+            status: CheckStatus::Missing,
+            required: true,
+            fix: deps_ok.then_some("install_cuda_deps"),
+            detail: Some("已選擇 cuda，但 CUDA 執行期依賴（cuBLAS/cuDNN）尚未安裝".into()),
+        };
+    }
+    let gpu_ok = probe_cuda_gpu(venv).await;
+    DoctorCheck {
+        id: "cuda_runtime",
+        label: "CUDA 加速 (NVIDIA GPU)".into(),
+        status: if gpu_ok { CheckStatus::Ok } else { CheckStatus::Broken },
+        required: true,
+        // No fix action: a missing GPU/driver isn't something we can install.
+        fix: None,
+        detail: (!gpu_ok)
+            .then(|| "未偵測到可用的 NVIDIA GPU／驅動程式；請安裝驅動，或將 Device 改回 cpu".into()),
+    }
+}
+
+/// Ask ctranslate2 (through the managed python) whether it can see a CUDA
+/// device. Success is cached process-wide, mirroring `tool_check`'s cache:
+/// the probe costs an interpreter start + ctranslate2 import (~seconds), and
+/// a GPU that was there once won't uninstall itself.
+async fn probe_cuda_gpu(venv: Option<&std::path::Path>) -> bool {
+    static CUDA_GPU_OK: OnceLock<()> = OnceLock::new();
+    if CUDA_GPU_OK.get().is_some() {
+        return true;
+    }
+    let Some(venv) = venv else { return false };
+    let python = venv_python(venv);
+    if !python.is_file() {
+        return false;
+    }
+    let mut cmd = Command::new(python);
+    cmd.hide_console()
+        .args([
+            "-c",
+            "import ctranslate2, sys; sys.exit(0 if ctranslate2.get_cuda_device_count() > 0 else 1)",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    // Bounded like tool_check: a wedged probe must not hang `/api/doctor`.
+    let ok = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.status())
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        let _ = CUDA_GPU_OK.set(());
+    }
+    ok
 }
 
 /// The Whisper model in effect: the live `WHISPER_MODEL` env (which the desktop
@@ -339,7 +421,8 @@ async fn tool_check(
         let mut ok = false;
         for &secs in TOOL_CHECK_TIMEOUTS_SECS {
             let mut cmd = Command::new(bin);
-            cmd.args(args)
+            cmd.hide_console()
+                .args(args)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .kill_on_drop(true);
@@ -435,7 +518,10 @@ impl DoctorHub {
 
 /// Whether this build knows how to run the given fix id.
 pub fn is_known_fix(id: &str) -> bool {
-    matches!(id, "install_runtime" | "install_deps" | "download_model")
+    matches!(
+        id,
+        "install_runtime" | "install_deps" | "install_cuda_deps" | "download_model"
+    )
 }
 
 /// Spawn a fix as a background task. Returns `false` if the id is unknown or a
@@ -449,6 +535,7 @@ pub fn start_fix(hub: Arc<DoctorHub>, config: Arc<Config>, fix: String) -> bool 
         let result = match fix.as_str() {
             "install_runtime" => fix_install_runtime(&hub, &config).await,
             "install_deps" => fix_install_deps(&hub, &config).await,
+            "install_cuda_deps" => fix_install_cuda_deps(&hub, &config).await,
             "download_model" => fix_download_model(&hub, &config).await,
             _ => Err("unknown fix".to_string()),
         };
@@ -466,7 +553,7 @@ pub fn start_fix(hub: Arc<DoctorHub>, config: Arc<Config>, fix: String) -> bool 
 async fn fix_install_runtime(hub: &DoctorHub, config: &Config) -> Result<(), String> {
     let uv = uv_path(config)?;
     let mut cmd = Command::new(uv);
-    cmd.args(["python", "install", PY_VERSION]);
+    cmd.hide_console().args(["python", "install", PY_VERSION]);
     run_streaming(hub, "install_runtime", cmd).await
 }
 
@@ -480,13 +567,15 @@ async fn fix_install_deps(hub: &DoctorHub, config: &Config) -> Result<(), String
     let mut mk = Command::new(&uv);
     // --clear replaces an existing venv (e.g. a leftover from a previous failed
     // attempt) instead of erroring "a virtual environment already exists".
-    mk.args(["venv"])
+    mk.hide_console()
+        .args(["venv"])
         .arg(&venv)
         .args(["--python", PY_VERSION, "--clear"]);
     run_streaming(hub, "install_deps", mk).await?;
 
     let mut pip = Command::new(&uv);
-    pip.args(["pip", "install", "--python"])
+    pip.hide_console()
+        .args(["pip", "install", "--python"])
         .arg(&venv)
         .arg("-r")
         .arg(&requirements);
@@ -497,14 +586,35 @@ async fn fix_install_deps(hub: &DoctorHub, config: &Config) -> Result<(), String
     Ok(())
 }
 
+/// Install the NVIDIA CUDA runtime wheels (cuBLAS/cuDNN) into the managed
+/// venv, then write the `.rj-cuda-deps-ok` sentinel `cuda_check` looks for.
+/// Kept out of the main `requirements.txt` so CPU-only installs never pay the
+/// multi-hundred-MB download; `ai/pipeline/asr.py` adds the wheels' DLL dirs
+/// to the search path when it loads a model with device=cuda.
+async fn fix_install_cuda_deps(hub: &DoctorHub, config: &Config) -> Result<(), String> {
+    let uv = uv_path(config)?;
+    let venv = managed_venv()?;
+    let requirements = ai_dir(config).join("requirements-cuda.txt");
+
+    let mut pip = Command::new(&uv);
+    pip.hide_console()
+        .args(["pip", "install", "--python"])
+        .arg(&venv)
+        .arg("-r")
+        .arg(&requirements);
+    run_streaming(hub, "install_cuda_deps", pip).await?;
+
+    std::fs::write(venv.join(CUDA_DEPS_SENTINEL), b"")
+        .map_err(|e| format!("installed CUDA deps but couldn't write completion marker: {e}"))?;
+    Ok(())
+}
+
 /// Load the selected faster-whisper model once with the managed python, which
-/// downloads it into `HF_HOME`.
+/// downloads it into `HF_HOME`. Always loads on cpu/int8 — the download into
+/// the HF cache is device-agnostic, and cpu can't fail on a machine whose
+/// CUDA setup isn't (yet) working.
 async fn fix_download_model(hub: &DoctorHub, config: &Config) -> Result<(), String> {
-    let python = if cfg!(target_os = "windows") {
-        managed_venv()?.join("Scripts/python.exe")
-    } else {
-        managed_venv()?.join("bin/python")
-    };
+    let python = venv_python(&managed_venv()?);
     if !python.is_file() {
         return Err("managed Python not installed yet — run install_deps first".into());
     }
@@ -515,7 +625,7 @@ async fn fix_download_model(hub: &DoctorHub, config: &Config) -> Result<(), Stri
         current_whisper_model(config)
     );
     let mut cmd = Command::new(python);
-    cmd.arg("-c").arg(code);
+    cmd.hide_console().arg("-c").arg(code);
     run_streaming(hub, "download_model", cmd).await
 }
 
@@ -532,9 +642,19 @@ fn managed_venv() -> Result<PathBuf, String> {
         .ok_or_else(|| "no managed runtime dir configured (RJ_RUNTIME_DIR)".to_string())
 }
 
-fn requirements_path(config: &Config) -> PathBuf {
-    // AI_DIR (set by the shell) holds requirements.txt; fall back to the worker
-    // script's parent directory.
+/// The venv's python interpreter (`Scripts\python.exe` on Windows, `bin/python`
+/// elsewhere).
+fn venv_python(venv: &std::path::Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        venv.join("Scripts/python.exe")
+    } else {
+        venv.join("bin/python")
+    }
+}
+
+/// The directory holding the AI worker's requirements files: `AI_DIR` (set by
+/// the shell), falling back to the worker script's parent directory.
+fn ai_dir(config: &Config) -> PathBuf {
     std::env::var_os("AI_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -543,7 +663,10 @@ fn requirements_path(config: &Config) -> PathBuf {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."))
         })
-        .join("requirements.txt")
+}
+
+fn requirements_path(config: &Config) -> PathBuf {
+    ai_dir(config).join("requirements.txt")
 }
 
 /// How many of the most recent streamed lines to fold into a failure's error
