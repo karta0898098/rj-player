@@ -500,7 +500,11 @@ async fn fix_install_deps(hub: &DoctorHub, config: &Config) -> Result<(), String
 /// Load the selected faster-whisper model once with the managed python, which
 /// downloads it into `HF_HOME`.
 async fn fix_download_model(hub: &DoctorHub, config: &Config) -> Result<(), String> {
-    let python = managed_venv()?.join("bin/python");
+    let python = if cfg!(target_os = "windows") {
+        managed_venv()?.join("Scripts/python.exe")
+    } else {
+        managed_venv()?.join("bin/python")
+    };
     if !python.is_file() {
         return Err("managed Python not installed yet — run install_deps first".into());
     }
