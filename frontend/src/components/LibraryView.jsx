@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { thumbnailUrl } from '../api.js';
+import CustomSelect from './CustomSelect.jsx';
 import {
   formatTime,
   PIPELINE_STATUS_LABELS,
@@ -444,26 +445,14 @@ export default function LibraryView({
         {/* Sort */}
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
           <span style={{ color: theme.textTertiary, fontSize: 11 }}>排序</span>
-          <select
+          <CustomSelect
+            theme={theme}
             value={sort}
-            onChange={(e) => setSort(e.target.value)}
-            style={{
-              border: `1px solid ${theme.hairline}`,
-              background: theme.inputBg,
-              color: theme.textPrimary,
-              borderRadius: 7,
-              padding: '5px 8px',
-              fontSize: 12,
-              outline: 'none',
-              cursor: 'pointer',
-            }}
-          >
-            {SORTS.map((s) => (
-              <option key={s.key} value={s.key}>
-                {s.label}
-              </option>
-            ))}
-          </select>
+            onChange={setSort}
+            options={SORTS.map((s) => ({ value: s.key, label: s.label }))}
+            ariaLabel="排序"
+            style={{ width: 132, background: theme.inputBg, padding: '5px 8px' }}
+          />
         </label>
       </div>
 

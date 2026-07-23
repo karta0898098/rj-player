@@ -101,9 +101,12 @@ export default function SettingsPopover({
   retranslateDisabled,
   retranslating,
 }) {
-  // Collapsed by default (README §版面結構 5 keeps this panel compact) — the
-  // Whisper/VAD knobs are power-user territory most sessions won't touch.
-  const [genSettingsOpen, setGenSettingsOpen] = useState(false);
+  // Which tab is showing (design_handoff_player_ui_enhancements §5): 播放 =
+  // playback speed + subtitle presentation (layers/size/background/offset);
+  // 進階 = ASR/VAD model knobs + regenerate/retranslate. Pure UI state, so it
+  // lives here rather than in App.jsx. Replaces the old single long scroll +
+  // the collapsible 進階 disclosure (the tab now gates that content instead).
+  const [settingsTab, setSettingsTab] = useState('playback');
   // Which layer's sliders the shared editor card below the chip row shows.
   const [editingLayer, setEditingLayer] = useState('jp');
 
@@ -157,6 +160,7 @@ export default function SettingsPopover({
           }}
         />
         <div
+          className="rj-pop-in"
           style={{
             position: 'relative',
             zIndex: 1,
@@ -167,8 +171,53 @@ export default function SettingsPopover({
             maxHeight: 'min(74vh, 600px)',
             overflowY: 'auto',
             boxSizing: 'border-box',
+            animation: 'rjPopIn 180ms cubic-bezier(.2,.8,.3,1) both',
+            transformOrigin: 'bottom right',
           }}
         >
+          {/* Two-tab segmented control (handoff §5): swaps the two panes below.
+             Same active/inactive visual language as the speed segments. */}
+          <div style={{ display: 'flex', gap: 0, background: theme.segBg, borderRadius: 8, padding: 3 }}>
+            {[
+              { key: 'playback', label: '播放' },
+              { key: 'advanced', label: '進階' },
+            ].map((t) => {
+              const active = settingsTab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setSettingsTab(t.key)}
+                  style={{
+                    flex: 1,
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '6px 0',
+                    borderRadius: 6,
+                    background: active ? theme.segmentActiveBg : 'transparent',
+                    color: active ? theme.segmentActiveText : theme.textTertiary,
+                    transition: 'background 120ms ease, color 120ms ease',
+                  }}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {settingsTab === 'playback' && (
+          <div
+            key="playback"
+            className="rj-tab-pane"
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              animation: 'rjTabPane 180ms cubic-bezier(.2,.8,.3,1) both',
+            }}
+          >
           <div style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>播放速率</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
             {SPEEDS.map((v) => {
@@ -366,63 +415,43 @@ export default function SettingsPopover({
             </div>
           </div>
 
-          <div style={{ borderTop: `1px solid ${theme.hairline}`, paddingTop: 8 }}>
-            <button
-              onClick={() => setGenSettingsOpen((o) => !o)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 5,
-                border: 'none',
-                background: 'none',
-                cursor: 'pointer',
-                padding: 0,
-                fontSize: 12,
-                fontWeight: 700,
-                color: theme.textPrimary,
-                width: '100%',
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 9,
-                  display: 'inline-block',
-                  transform: genSettingsOpen ? 'rotate(90deg)' : 'none',
-                  transition: 'transform 0.15s',
-                }}
-              >
-                ▸
-              </span>
-              進階：字幕產生設定
-            </button>
-
-            {genSettingsOpen && (
-              <div style={{ marginTop: 10 }}>
-                <GenerationOptionsForm
-                  theme={theme}
-                  whisperModel={whisperModel}
-                  onWhisperModelChange={onWhisperModelChange}
-                  whisperTemperature={whisperTemperature}
-                  onWhisperTemperatureChange={onWhisperTemperatureChange}
-                  initialPrompt={initialPrompt}
-                  onInitialPromptChange={onInitialPromptChange}
-                  referenceLyrics={referenceLyrics}
-                  onReferenceLyricsChange={onReferenceLyricsChange}
-                  vadEnabled={vadEnabled}
-                  onVadEnabledChange={onVadEnabledChange}
-                  vadThreshold={vadThreshold}
-                  onVadThresholdChange={onVadThresholdChange}
-                  vadMinSilenceMs={vadMinSilenceMs}
-                  onVadMinSilenceMsChange={onVadMinSilenceMsChange}
-                  vadSpeechPadMs={vadSpeechPadMs}
-                  onVadSpeechPadMsChange={onVadSpeechPadMsChange}
-                  vadMaxSpeechS={vadMaxSpeechS}
-                  onVadMaxSpeechSChange={onVadMaxSpeechSChange}
-                  onResetGenerationSettings={onResetGenerationSettings}
-                />
-              </div>
-            )}
           </div>
+          )}
+
+          {settingsTab === 'advanced' && (
+          <div
+            key="advanced"
+            className="rj-tab-pane"
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              animation: 'rjTabPane 180ms cubic-bezier(.2,.8,.3,1) both',
+            }}
+          >
+          <div style={{ fontSize: 12, fontWeight: 700, color: theme.textPrimary }}>字幕產生設定</div>
+          <GenerationOptionsForm
+            theme={theme}
+            whisperModel={whisperModel}
+            onWhisperModelChange={onWhisperModelChange}
+            whisperTemperature={whisperTemperature}
+            onWhisperTemperatureChange={onWhisperTemperatureChange}
+            initialPrompt={initialPrompt}
+            onInitialPromptChange={onInitialPromptChange}
+            referenceLyrics={referenceLyrics}
+            onReferenceLyricsChange={onReferenceLyricsChange}
+            vadEnabled={vadEnabled}
+            onVadEnabledChange={onVadEnabledChange}
+            vadThreshold={vadThreshold}
+            onVadThresholdChange={onVadThresholdChange}
+            vadMinSilenceMs={vadMinSilenceMs}
+            onVadMinSilenceMsChange={onVadMinSilenceMsChange}
+            vadSpeechPadMs={vadSpeechPadMs}
+            onVadSpeechPadMsChange={onVadSpeechPadMsChange}
+            vadMaxSpeechS={vadMaxSpeechS}
+            onVadMaxSpeechSChange={onVadMaxSpeechSChange}
+            onResetGenerationSettings={onResetGenerationSettings}
+          />
 
           <div
             style={{
@@ -481,6 +510,21 @@ export default function SettingsPopover({
 
           <div style={{ fontSize: 10, color: theme.textTertiary, paddingTop: 2 }}>
             字幕來源：本地 Whisper 辨識＋翻譯 API
+          </div>
+          </div>
+          )}
+
+          {/* Footer hint (handoff §5): reminds which knob lives under which tab. */}
+          <div
+            style={{
+              borderTop: `1px solid ${theme.hairline}`,
+              paddingTop: 8,
+              fontSize: 9,
+              color: theme.textTertiary,
+              lineHeight: 1.5,
+            }}
+          >
+            「播放」：圖層／大小／背景／校正・「進階」：Whisper／VAD／重新產生
           </div>
         </div>
       </div>

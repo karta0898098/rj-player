@@ -20,7 +20,7 @@ import {
   formatTime,
   PIPELINE_ACTIVE_STATUSES,
   GENERATION_SETTINGS_DEFAULTS,
-  MUSIC_GENERATION_PRESET,
+  musicPresetFor,
   loadGenerationSettings,
   saveGenerationSettings,
   buildGenerationSettingsPayload,
@@ -272,9 +272,9 @@ export default function App() {
   // Ordered video_ids added via "加入佇列", independent of processing status;
   // persisted to localStorage so manual reordering survives a reload.
   const [playlistIds, setPlaylistIds] = useState(() => loadPlaylist());
-  // 'playlist' is the default active tab (design handoff change #4 — was
-  // 'subtitles').
-  const [sidebarTab, setSidebarTab] = useState('playlist'); // 'subtitles' | 'playlist'
+  // 'collection' (收藏 — the merged download-queue + playlist tab, handoff §6)
+  // is the default active tab. Was 'playlist' before the queue/playlist merge.
+  const [sidebarTab, setSidebarTab] = useState('collection'); // 'subtitles' | 'collection'
 
   // ---- main view: player vs. video library --------------------------------
   // The Titlebar's library button swaps the whole body between the normal
@@ -399,7 +399,9 @@ export default function App() {
     setQueueDraft((d) => ({
       ...d,
       isMusicVideo: checked,
-      ...(checked ? MUSIC_GENERATION_PRESET : {}),
+      // Language-aware prompt: the MV may be Japanese or English, so key the
+      // preset off the currently-chosen 來源語言 (dsd §12.7).
+      ...(checked ? musicPresetFor(d.sourceLang) : {}),
     }));
   }
 
@@ -455,6 +457,47 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isFullscreen]);
+
+  // In the video library, Esc returns to the player (parity with the Titlebar
+  // "播放器" back button). Skipped while an overlay that owns Esc is open (the
+  // delete ConfirmDialog, the app-settings panel) so Esc dismisses that first
+  // instead of jumping views out from under it.
+  useEffect(() => {
+    if (view !== 'library') return undefined;
+    function onKeyDown(e) {
+      if (e.key !== 'Escape') return;
+      if (confirmDelete || showAppSettings) return;
+      setView('player');
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [view, confirmDelete, showAppSettings]);
+
+  // Global media shortcuts (player view only): Space = play/pause, M = mute.
+  // Ignored while a text field is focused (URL box, initial-prompt, cue editor)
+  // so their normal spacebar / 'm' still type. Space is preventDefault'd so it
+  // drives the <video> YouTube-style instead of scrolling the page or
+  // re-triggering whatever button happens to be focused. `e.code` (physical
+  // key) is layout-independent. Skipped when a modifier is held (e.g. ⌘Space).
+  useEffect(() => {
+    if (view !== 'player') return undefined;
+    function onKeyDown(e) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.code === 'KeyM') {
+        e.preventDefault();
+        toggleMute();
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, loadStatus]);
 
   // Persist generation settings to localStorage on every change (including
   // the initial mount, which harmlessly re-saves whatever was just loaded).
@@ -534,11 +577,16 @@ export default function App() {
       try {
         const data = await previewVideo(url);
         setQueuePreview(data);
-        if (data.is_music && !queueTouchedRef.current) {
-          setQueueDraft((d) => ({ ...d, isMusicVideo: true, ...MUSIC_GENERATION_PRESET }));
-        }
+        // Pre-select the detected source language first, then key the music
+        // preset off it: the MV may be English, not Japanese, so the prompt
+        // must match what was actually detected (dsd §12.7) -- not the stale
+        // 'ja' default the draft still holds at this point.
+        const detectedLang = data.source_lang || 'ja';
         if (data.source_lang) {
           setQueueDraft((d) => ({ ...d, sourceLang: data.source_lang }));
+        }
+        if (data.is_music && !queueTouchedRef.current) {
+          setQueueDraft((d) => ({ ...d, isMusicVideo: true, ...musicPresetFor(detectedLang) }));
         }
       } catch (err) {
         setQueuePreview(null);
@@ -1135,7 +1183,12 @@ export default function App() {
   // cue per B5.2) — drives SettingsPopover hiding the 羅馬拼音 toggle + its
   // 字幕樣式 style slot for a source language with no reading layer.
   const hasPhoneticLayer = cues.some((c) => c.phonetic);
-  const showSubtitlePanel = hasCues || (subtitleStatus && subtitleStatus !== 'idle') || playlistIds.length > 0;
+  // The 收藏 sidebar is always present (user request): even with no video,
+  // queue, playlist, or cues it shows its empty states + the 影片庫 entry
+  // button. This also guarantees the library — whose entry moved from the
+  // Titlebar to the sidebar footer (handoff §6) — is always reachable. The
+  // queue (處理中) and playlist (播放清單) now live inside its 收藏 tab.
+  const showSubtitlePanel = true;
   const showChannelRow = !theaterMode && Boolean(channelName);
 
   // PlaylistPanel's ordered row data: playlistIds (user-reorderable) enriched
@@ -1332,8 +1385,14 @@ export default function App() {
           onUrlChange={setUrlInput}
           onUrlSubmit={handleUrlSubmit}
           loading={queueSubmitting}
+          // Library ENTRY moved to the sidebar footer button (handoff §6), so
+          // the Titlebar no longer offers "影片庫" in the player view. We still
+          // pass the toggle WHILE the library is open so its "返回播放器" exit
+          // stays reachable (the sidebar — and thus its footer — isn't rendered
+          // in library view). undefined in player view => Titlebar renders no
+          // library button there.
           showLibrary={view === 'library'}
-          onToggleLibrary={() => setView((v) => (v === 'library' ? 'player' : 'library'))}
+          onToggleLibrary={view === 'library' ? () => setView('player') : undefined}
           onOpenAppSettings={() => setShowAppSettings(true)}
           optionsAnchorRef={queueOptionsAnchorRef}
           showOptions={showQueueOptions}
@@ -1374,10 +1433,19 @@ export default function App() {
           }
         />
 
-        <QueueList theme={theme} items={queueItems} onCancel={handleCancelQueueItem} />
+        {/* The download queue (處理中) moved from a standalone strip here into
+           the sidebar's 收藏 tab (handoff §6) — see the SidebarPanel below. */}
 
         {view === 'library' ? (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+          <div
+            className="rj-view-in"
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: 'flex',
+              animation: 'rjViewIn 300ms cubic-bezier(.2,.8,.3,1) both',
+            }}
+          >
             <LibraryView
               theme={theme}
               videos={libraryVideos}
@@ -1450,9 +1518,34 @@ export default function App() {
               activeTab={sidebarTab}
               onTabChange={setSidebarTab}
               tabs={[
-                { key: 'playlist', label: '清單', badge: playlistItems.length ? playlistItems.length : null },
+                {
+                  key: 'collection',
+                  label: '收藏',
+                  badge: playlistItems.length + queueItems.length || null,
+                },
                 { key: 'subtitles', label: '字幕', badge: hasCues ? `${cues.length} 句` : null },
               ]}
+              footer={
+                // Library entry point (handoff §6) — replaces the removed
+                // Titlebar 影片庫 button. Persistent across both sidebar tabs.
+                <button
+                  type="button"
+                  onClick={() => setView('library')}
+                  style={{
+                    width: '100%',
+                    border: `1px solid ${theme.hairline}`,
+                    background: theme.segBg,
+                    color: theme.textSecondary,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '8px 0',
+                    borderRadius: 9,
+                    cursor: 'pointer',
+                  }}
+                >
+                  瀏覽完整影片庫 →
+                </button>
+              }
             >
               {sidebarTab === 'subtitles' ? (
                 <SubtitleList
@@ -1470,14 +1563,58 @@ export default function App() {
                   onExport={handleExportSubtitles}
                 />
               ) : (
-                <PlaylistPanel
-                  theme={theme}
-                  items={playlistItems}
-                  activeVideoId={videoId}
-                  onSelect={selectPlaylistItem}
-                  onRemove={removeFromPlaylist}
-                  onReorder={reorderPlaylist}
-                />
+                // 收藏 tab (handoff §6): download queue (處理中) pinned at top,
+                // playlist (播放清單) scrolling below. The two section blocks
+                // stagger their rjRowCascade entrance (~60ms apart) for the
+                // subtle cascade the handoff asks for.
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                  {queueItems.length > 0 && (
+                    <div
+                      className="rj-cascade-item"
+                      style={{ flexShrink: 0, animation: 'rjRowCascade 260ms cubic-bezier(.2,.8,.3,1) both' }}
+                    >
+                      <div
+                        style={{
+                          padding: '10px 12px 4px',
+                          fontSize: 10,
+                          fontWeight: 700,
+                          letterSpacing: 0.5,
+                          color: theme.textTertiary,
+                        }}
+                      >
+                        處理中 · {queueItems.length}
+                      </div>
+                      <QueueList theme={theme} items={queueItems} onCancel={handleCancelQueueItem} />
+                    </div>
+                  )}
+                  <div
+                    className="rj-cascade-item"
+                    style={{
+                      flexShrink: 0,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'baseline',
+                      padding: '10px 12px 4px',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: 0.5,
+                      color: theme.textTertiary,
+                      animation: 'rjRowCascade 260ms cubic-bezier(.2,.8,.3,1) both',
+                      animationDelay: '60ms',
+                    }}
+                  >
+                    <span>播放清單 · {playlistItems.length}</span>
+                    {playlistItems.length > 0 && <span style={{ fontWeight: 500 }}>拖曳排序</span>}
+                  </div>
+                  <PlaylistPanel
+                    theme={theme}
+                    items={playlistItems}
+                    activeVideoId={videoId}
+                    onSelect={selectPlaylistItem}
+                    onRemove={removeFromPlaylist}
+                    onReorder={reorderPlaylist}
+                  />
+                </div>
               )}
             </SidebarPanel>
           )}

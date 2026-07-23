@@ -29,11 +29,15 @@ const TAB_ICONS = {
 // owns that state since it also needs it to decide what data to fetch/pass).
 // The body wrapper is `position: relative` so SubtitleList's "回到目前播放"
 // button can anchor to it.
-export default function SidebarPanel({ theme, tabs, activeTab, onTabChange, children }) {
+export default function SidebarPanel({ theme, tabs, activeTab, onTabChange, footer, children }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
     <div
+      // `rj-panel-open` / rjPanelOpen: one-time slide+fade on first mount
+      // ("opening the collection", handoff §Interactions). Fires when the
+      // sidebar appears (showSubtitlePanel flips true in App.jsx); NOT looping.
+      className="rj-panel-open"
       style={{
         width: collapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH,
         flexShrink: 0,
@@ -43,6 +47,7 @@ export default function SidebarPanel({ theme, tabs, activeTab, onTabChange, chil
         minHeight: 0,
         position: 'relative',
         transition: 'width 0.18s ease',
+        animation: 'rjPanelOpen 320ms cubic-bezier(.2,.8,.3,1) both',
       }}
     >
       <div
@@ -126,10 +131,29 @@ export default function SidebarPanel({ theme, tabs, activeTab, onTabChange, chil
         // row — and therefore the whole card — taller; with it, the card is
         // sized by the video and the list simply scrolls within this pane.
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
+          {/* Keyed by activeTab so switching tabs remounts this wrapper and
+             replays rjRowCascade — the newly-shown list fades/rises in rather
+             than snapping. `position:absolute; inset:0` keeps the (tall) list
+             from feeding intrinsic height back up the flex chain (the card is
+             sized by the video, not the list — see the comment above). */}
+          <div
+            key={activeTab}
+            className="rj-cascade"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              animation: 'rjRowCascade 260ms cubic-bezier(.2,.8,.3,1) both',
+            }}
+          >
             {children}
           </div>
         </div>
+      )}
+
+      {!collapsed && footer && (
+        <div style={{ flexShrink: 0, borderTop: `1px solid ${theme.hairline}`, padding: 10 }}>{footer}</div>
       )}
     </div>
   );

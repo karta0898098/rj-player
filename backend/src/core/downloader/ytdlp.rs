@@ -360,13 +360,23 @@ impl YtDlp {
     /// (e.g. `<video_dir>/cc.zh.srt`). `video_dir` is derived from
     /// `source_cc_path`'s parent.
     ///
-    /// Source-language priority: `source_lang` then `<source_lang>-orig`
-    /// (creator-uploaded original track, sometimes the only manual track
-    /// present), plain `source_lang` preferred if both exist. Target
-    /// (Chinese) priority: `zh-Hant` > `zh-TW` > `zh-HK` > `zh` -- simplified
-    /// (`zh-Hans`/`zh-CN`) is deliberately NOT requested; converting it to
-    /// Traditional needs OpenCC, deferred (dsd.md §12.8). Deliberately uses
-    /// `--write-subs` (NOT `--write-auto-subs`) so YouTube's
+    /// Source-track priority (dsd.md §12.7's ASR-skip broadening): the
+    /// selected `source_lang` wins, then English, then Japanese -- and within
+    /// each language the plain `<lang>` track beats its `<lang>-orig`
+    /// (creator-uploaded original) variant. So the search order is
+    /// `source_lang, source_lang-orig, en, en-orig, ja, ja-orig` (deduped when
+    /// `source_lang` is itself `en`/`ja`). The point: a video whose selected
+    /// source language has no manual CC but which DOES ship an English or
+    /// Japanese one can still skip Whisper -- we just use that CC as the
+    /// source transcript and translate from it. The matched language is
+    /// returned so the caller can persist it (`meta.source_cc_lang`), because
+    /// it drives the worker's romaji/translate stages and may differ from
+    /// `source_lang`.
+    ///
+    /// Target (Chinese) priority: `zh-Hant` > `zh-TW` > `zh-HK` > `zh` --
+    /// simplified (`zh-Hans`/`zh-CN`) is deliberately NOT requested; converting
+    /// it to Traditional needs OpenCC, deferred (dsd.md §12.8). Deliberately
+    /// uses `--write-subs` (NOT `--write-auto-subs`) so YouTube's
     /// auto-generated/auto-translated captions are never mistaken for the
     /// real thing.
     ///
@@ -376,11 +386,13 @@ impl YtDlp {
     /// is what lets the worker skip the LLM translate call entirely and use
     /// the official Chinese CC instead (`doc.target_source == "cc"`).
     ///
-    /// Returns `Ok((source_found, target_found))`. Either or both may be
-    /// `false` -- yt-dlp finding nothing for a given track is the normal
-    /// outcome for most videos, not an error. Intentionally separate from
-    /// `download_video` so callers (like `extract_audio` below) can treat
-    /// failures here as non-fatal: the video still downloads and the
+    /// Returns `Ok((source_cc_lang, target_found))`: `source_cc_lang` is the
+    /// matched source-CC language (`Some("ja")`/`Some("en")`/...) or `None`
+    /// when no source CC was found; `target_found` is whether a Chinese CC
+    /// landed. Either may be empty -- yt-dlp finding nothing for a given track
+    /// is the normal outcome for most videos, not an error. Intentionally
+    /// separate from `download_video` so callers (like `extract_audio` below)
+    /// can treat failures here as non-fatal: the video still downloads and the
     /// pipeline falls back to Whisper ASR / LLM translation as needed.
     pub async fn fetch_captions(
         &self,
@@ -388,9 +400,24 @@ impl YtDlp {
         source_cc_path: &Path,
         target_cc_path: &Path,
         source_lang: &str,
-    ) -> Result<(bool, bool), DownloaderError> {
+    ) -> Result<(Option<String>, bool), DownloaderError> {
         let video_dir = source_cc_path.parent().unwrap_or_else(|| Path::new("."));
         tokio::fs::create_dir_all(video_dir).await?;
+
+        // Source-track search order: selected `source_lang` first, then `en`,
+        // then `ja` -- deduped so an `en`/`ja` source_lang isn't requested
+        // twice. Each base language is immediately followed by its `-orig`
+        // variant so the plain track is preferred over `-orig` within a
+        // language.
+        let mut source_priority: Vec<String> = Vec::new();
+        for base in [source_lang, "en", "ja"] {
+            if source_priority.iter().any(|l| l == base) {
+                continue;
+            }
+            source_priority.push(base.to_string());
+            source_priority.push(format!("{base}-orig"));
+        }
+        let target_priority = ["zh-Hant", "zh-TW", "zh-HK", "zh"];
 
         // yt-dlp writes one file per matched language as `cc.<lang>.srt`
         // (e.g. `cc.ja.srt`/`cc.en.srt`/`cc.zh-Hant.srt`), never a fixed
@@ -398,9 +425,12 @@ impl YtDlp {
         // landed into the caller-specified known path, once per track.
         let out_tmpl = video_dir.join("cc.%(ext)s");
         let out_tmpl_str = out_tmpl.to_string_lossy().to_string();
-        let sub_langs = format!(
-            "{source_lang},{source_lang}-orig,zh-Hant,zh-TW,zh-HK,zh"
-        );
+        let sub_langs = source_priority
+            .iter()
+            .map(String::as_str)
+            .chain(target_priority)
+            .collect::<Vec<_>>()
+            .join(",");
 
         let output = Command::new(&self.bin)
             .args([
@@ -426,19 +456,22 @@ impl YtDlp {
             ));
         }
 
-        let source_lang_orig = format!("{source_lang}-orig");
-        let source_found = normalize_cc_files(
-            video_dir,
-            source_cc_path,
-            &[source_lang, source_lang_orig.as_str()],
-        )?;
-        let target_found = normalize_cc_files(
-            video_dir,
-            target_cc_path,
-            &["zh-Hant", "zh-TW", "zh-HK", "zh"],
-        )?;
+        let source_priority_refs: Vec<&str> =
+            source_priority.iter().map(String::as_str).collect();
+        // Map the matched priority entry (e.g. `"en-orig"`) back to its base
+        // language (`"en"`) -- that's the CC's real language, what the pipeline
+        // needs as the worker's `source_lang`.
+        let source_cc_lang = normalize_cc_files(video_dir, source_cc_path, &source_priority_refs)?
+            .map(|matched| {
+                matched
+                    .strip_suffix("-orig")
+                    .unwrap_or(&matched)
+                    .to_string()
+            });
+        let target_found =
+            normalize_cc_files(video_dir, target_cc_path, &target_priority)?.is_some();
 
-        Ok((source_found, target_found))
+        Ok((source_cc_lang, target_found))
     }
 
     /// Fetch the video's poster thumbnail, converted to JPEG and normalized
@@ -550,30 +583,36 @@ impl YtDlp {
 /// metadata/rename calls on files yt-dlp just finished writing, small
 /// enough not to need async, and keeping it sync lets it be unit-tested
 /// with a plain `#[test]` below instead of a `#[tokio::test]`.
+/// Returns the `lang_priority` entry that matched (e.g. `"ja"`, `"ja-orig"`,
+/// `"en"`), or `None` when the video had no manual CC in any of the requested
+/// languages. Callers that only care whether a track landed use `.is_some()`;
+/// the source-track caller needs the actual matched language to persist it
+/// (the CC's real language can differ from the video's selected `source_lang`
+/// -- see `fetch_captions`).
 fn normalize_cc_files(
     video_dir: &Path,
     out_path: &Path,
     lang_priority: &[&str],
-) -> Result<bool, DownloaderError> {
+) -> Result<Option<String>, DownloaderError> {
     let candidates: Vec<std::path::PathBuf> = lang_priority
         .iter()
         .map(|lang| video_dir.join(format!("cc.{lang}.srt")))
         .collect();
 
-    let chosen = candidates.iter().find(|p| p.exists()).cloned();
+    let chosen_idx = candidates.iter().position(|p| p.exists());
 
-    for stray in &candidates {
-        if chosen.as_ref() != Some(stray) && stray.exists() {
+    for (i, stray) in candidates.iter().enumerate() {
+        if chosen_idx != Some(i) && stray.exists() {
             std::fs::remove_file(stray)?;
         }
     }
 
-    let Some(chosen) = chosen else {
-        return Ok(false);
+    let Some(idx) = chosen_idx else {
+        return Ok(None);
     };
 
-    std::fs::rename(&chosen, out_path)?;
-    Ok(true)
+    std::fs::rename(&candidates[idx], out_path)?;
+    Ok(Some(lang_priority[idx].to_string()))
 }
 
 /// After a `--write-thumbnail --convert-thumbnails jpg` run, yt-dlp has
@@ -759,7 +798,7 @@ mod tests {
 
         let found = normalize_cc_files(&dir.0, &cc_path, &["ja", "ja-orig"]).expect("should not error");
 
-        assert!(found);
+        assert!(found.is_some());
         assert_eq!(std::fs::read_to_string(&cc_path).unwrap(), "ja content");
         assert!(!dir.0.join("cc.ja.srt").exists());
         assert!(!dir.0.join("cc.ja-orig.srt").exists(), "stray ja-orig file should be cleaned up");
@@ -773,7 +812,11 @@ mod tests {
 
         let found = normalize_cc_files(&dir.0, &cc_path, &["ja", "ja-orig"]).expect("should not error");
 
-        assert!(found);
+        assert_eq!(
+            found.as_deref(),
+            Some("ja-orig"),
+            "must report the actual matched language entry, not just that one landed"
+        );
         assert_eq!(std::fs::read_to_string(&cc_path).unwrap(), "orig content");
     }
 
@@ -784,7 +827,7 @@ mod tests {
 
         let found = normalize_cc_files(&dir.0, &cc_path, &["ja", "ja-orig"]).expect("no manual CC is not an error");
 
-        assert!(!found);
+        assert!(found.is_none());
         assert!(!cc_path.exists());
     }
 
@@ -799,7 +842,7 @@ mod tests {
 
         let found = normalize_cc_files(&dir.0, &cc_path, &["en", "en-orig"]).expect("should not error");
 
-        assert!(found);
+        assert!(found.is_some());
         assert_eq!(std::fs::read_to_string(&cc_path).unwrap(), "english content");
         assert!(!dir.0.join("cc.en.srt").exists());
     }
@@ -817,7 +860,7 @@ mod tests {
 
         let found = normalize_cc_files(&dir.0, &cc_path, &["en", "en-orig"]).expect("should not error");
 
-        assert!(found);
+        assert!(found.is_some());
         assert_eq!(std::fs::read_to_string(&cc_path).unwrap(), "en content");
         assert!(!dir.0.join("cc.en.srt").exists());
         assert!(!dir.0.join("cc.en-orig.srt").exists(), "stray en-orig file should be cleaned up");
@@ -838,7 +881,7 @@ mod tests {
         let found = normalize_cc_files(&dir.0, &target_cc_path, &["zh-Hant", "zh-TW", "zh-HK", "zh"])
             .expect("should not error");
 
-        assert!(found);
+        assert!(found.is_some());
         assert_eq!(std::fs::read_to_string(&target_cc_path).unwrap(), "zh-Hant content");
         assert!(!dir.0.join("cc.zh-Hant.srt").exists());
         assert!(!dir.0.join("cc.zh.srt").exists(), "stray zh file should be cleaned up");
@@ -859,7 +902,7 @@ mod tests {
         let target_cc_path = dir.0.join("cc.zh.srt");
         let ytdlp = YtDlp::new("yt-dlp", "ffmpeg", "best");
 
-        let (source_found, _target_found) = ytdlp
+        let (source_cc_lang, _target_found) = ytdlp
             .fetch_captions(
                 "https://www.youtube.com/watch?v=3cXUHPT2isw",
                 &cc_path,
@@ -869,7 +912,7 @@ mod tests {
             .await
             .expect("yt-dlp run itself should succeed even with no matching subs");
 
-        assert!(!source_found, "this video has no manual ja subs -- expected Ok(false)");
+        assert!(source_cc_lang.is_none(), "this video has no manual subs -- expected None");
         assert!(!cc_path.exists());
     }
 }

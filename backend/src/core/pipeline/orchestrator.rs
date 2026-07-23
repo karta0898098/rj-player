@@ -177,10 +177,25 @@ pub async fn run_pipeline(
         None
     };
 
+    // When a manual source CC was fetched, its ACTUAL language (persisted as
+    // `meta.source_cc_lang` at download time) is what the worker must treat as
+    // the source language -- it can differ from the user-selected
+    // `source_lang` (dsd.md §12.7's ASR-skip broadening: a `ja`-selected video
+    // with only an English manual CC lands `source_cc_lang == "en"`). The
+    // worker uses that CC as the source transcript (`source == "cc"`), so its
+    // romaji/translate stages must key off the CC's real language, not the
+    // user's pick. With no source CC, Whisper runs against `source_lang` as
+    // before.
+    let effective_source_lang = cc_path
+        .as_ref()
+        .and(meta.source_cc_lang.clone())
+        .or_else(|| meta.source_lang.clone())
+        .unwrap_or_else(|| "ja".to_string());
+
     let params = GenerateSubtitlesParams {
         video_id: video_id.to_string(),
         audio_path: audio_path.to_string_lossy().to_string(),
-        source_lang: meta.source_lang.clone().unwrap_or_else(|| "ja".to_string()),
+        source_lang: effective_source_lang,
         whisper_model: effective_whisper_model,
         whisper_temperature: effective_whisper_temperature,
         compute_type: compute_type.to_string(),

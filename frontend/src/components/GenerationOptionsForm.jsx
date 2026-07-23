@@ -1,7 +1,22 @@
 import { ACCENT } from '../theme.js';
 import RangeSlider from './RangeSlider.jsx';
+import CustomSelect from './CustomSelect.jsx';
 
 export const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3'];
+
+const SOURCE_LANG_OPTIONS = [
+  { value: 'ja', label: '日文' },
+  { value: 'en', label: '英文' },
+];
+const MAX_HEIGHT_OPTIONS = [
+  { value: 0, label: '最佳' },
+  { value: 2160, label: '2160p (4K)' },
+  { value: 1440, label: '1440p' },
+  { value: 1080, label: '1080p' },
+  { value: 720, label: '720p' },
+  { value: 480, label: '480p' },
+];
+const WHISPER_MODEL_OPTIONS = WHISPER_MODELS.map((m) => ({ value: m, label: m }));
 
 // The Whisper/VAD/prompt knob controls shared between SettingsPopover's
 // "進階：字幕產生設定" (regenerate an already-loaded video) and the
@@ -72,32 +87,26 @@ export default function GenerationOptionsForm({
       {onSourceLangChange && (
         <div>
           <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>來源語言 (source_lang)</div>
-          <select
+          <CustomSelect
+            theme={theme}
             value={sourceLang}
-            onChange={(e) => onSourceLangChange(e.target.value)}
-            style={compactInputStyle}
-          >
-            <option value="ja">日文</option>
-            <option value="en">英文</option>
-          </select>
+            onChange={onSourceLangChange}
+            options={SOURCE_LANG_OPTIONS}
+            ariaLabel="來源語言"
+          />
         </div>
       )}
 
       {onMaxHeightChange && (
         <div>
           <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>畫質 (max_height)</div>
-          <select
+          <CustomSelect
+            theme={theme}
             value={maxHeight}
-            onChange={(e) => onMaxHeightChange(Number(e.target.value))}
-            style={compactInputStyle}
-          >
-            <option value={0}>最佳</option>
-            <option value={2160}>2160p (4K)</option>
-            <option value={1440}>1440p</option>
-            <option value={1080}>1080p</option>
-            <option value={720}>720p</option>
-            <option value={480}>480p</option>
-          </select>
+            onChange={onMaxHeightChange}
+            options={MAX_HEIGHT_OPTIONS}
+            ariaLabel="畫質"
+          />
         </div>
       )}
 
@@ -130,17 +139,13 @@ export default function GenerationOptionsForm({
 
       <div>
         <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 6 }}>模型 (whisper_model)</div>
-        <select
+        <CustomSelect
+          theme={theme}
           value={whisperModel}
-          onChange={(e) => onWhisperModelChange(e.target.value)}
-          style={compactInputStyle}
-        >
-          {WHISPER_MODELS.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+          onChange={onWhisperModelChange}
+          options={WHISPER_MODEL_OPTIONS}
+          ariaLabel="辨識模型"
+        />
         <div style={{ fontSize: 10, color: theme.textTertiary, marginTop: 4 }}>
           large-v3 對歌聲辨識最準，但速度較慢
         </div>

@@ -1,6 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import { getDoctor, startDoctorFix } from '../api.js';
 import { setLlmKey, llmKeyPresent, setWhisperModel } from '../tauri.js';
+import CustomSelect from './CustomSelect.jsx';
+
+const WIZARD_MODEL_OPTIONS = [
+  { value: 'tiny', label: 'tiny — 最小、最快，準確度較低' },
+  { value: 'base', label: 'base — 小、快，準確度普通' },
+  { value: 'small', label: 'small — 中等體積與速度' },
+  { value: 'medium', label: 'medium — 較大、較準，速度稍慢' },
+  { value: 'large-v3', label: 'large-v3 — 最準確（建議）' },
+];
+const WIZARD_COMPUTE_OPTIONS = [
+  { value: 'int8', label: 'int8 — 最省資源（建議）' },
+  { value: 'int8_float16', label: 'int8_float16' },
+  { value: 'float32', label: 'float32 — 最高精度' },
+];
 
 // First-run setup wizard (dsd.md §13.5). Shown once on the desktop app; walks
 // the user through installing the AI components (via the Doctor API), picking a
@@ -543,33 +557,26 @@ export default function SetupWizard({ onComplete }) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div>
                     <div style={labelStyle}>Whisper 模型</div>
-                    <select
+                    <CustomSelect
                       value={whisperModel}
-                      onChange={(e) => {
-                        const m = e.target.value;
+                      onChange={(m) => {
                         setWhisperModelState(m);
                         ensureModel(m);
                       }}
+                      options={WIZARD_MODEL_OPTIONS}
+                      ariaLabel="Whisper 模型"
                       style={fieldStyle}
-                    >
-                      <option value="tiny">tiny — 最小、最快，準確度較低</option>
-                      <option value="base">base — 小、快，準確度普通</option>
-                      <option value="small">small — 中等體積與速度</option>
-                      <option value="medium">medium — 較大、較準，速度稍慢</option>
-                      <option value="large-v3">large-v3 — 最準確（建議）</option>
-                    </select>
+                    />
                   </div>
                   <div>
                     <div style={labelStyle}>Compute type（進階）</div>
-                    <select
+                    <CustomSelect
                       value={computeType}
-                      onChange={(e) => setComputeType(e.target.value)}
+                      onChange={setComputeType}
+                      options={WIZARD_COMPUTE_OPTIONS}
+                      ariaLabel="Compute type"
                       style={fieldStyle}
-                    >
-                      <option value="int8">int8 — 最省資源（建議）</option>
-                      <option value="int8_float16">int8_float16</option>
-                      <option value="float32">float32 — 最高精度</option>
-                    </select>
+                    />
                   </div>
                   <div
                     style={{

@@ -3,6 +3,7 @@ import { ACCENT } from '../theme.js';
 import { getCachedModels, deleteCachedModel, clearCachedModels, getStorageInfo } from '../api.js';
 import { getSettings, setComputeType, revealInFinder } from '../tauri.js';
 import ConfirmDialog from './ConfirmDialog.jsx';
+import CustomSelect from './CustomSelect.jsx';
 
 const COMPUTE_TYPES = [
   { value: 'int8', label: 'int8（最省資源，建議）' },
@@ -174,6 +175,7 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
   return (
     <div
       onPointerDown={onClose}
+      className="rj-backdrop-in"
       style={{
         position: 'fixed',
         inset: 0,
@@ -183,15 +185,18 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
         alignItems: 'center',
         justifyContent: 'center',
         padding: 20,
+        animation: 'rjBackdropIn 160ms ease both',
       }}
     >
       <div
         role="dialog"
         aria-modal="true"
         onPointerDown={(e) => e.stopPropagation()}
+        className="rj-pop-in"
         style={{
           width: 'min(92vw, 660px)',
           height: 460,
+          animation: 'rjPopIn 220ms cubic-bezier(.2,.8,.3,1) both',
           background: theme.winBg,
           backdropFilter: 'blur(44px) saturate(180%)',
           WebkitBackdropFilter: 'blur(44px) saturate(180%)',
@@ -308,7 +313,10 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
             )}
 
             {activeTab === 'appearance' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div
+                className="rj-tab-pane"
+                style={{ display: 'flex', flexDirection: 'column', gap: 12, animation: 'rjTabPane 180ms cubic-bezier(.2,.8,.3,1) both' }}
+              >
                 <div style={sectionTitleStyle}>外觀</div>
                 <div style={rowStyle}>
                   <span style={{ fontSize: 12, color: theme.textSecondary, flexShrink: 0, width: 90 }}>主題</span>
@@ -340,32 +348,22 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
             )}
 
             {activeTab === 'performance' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div
+                className="rj-tab-pane"
+                style={{ display: 'flex', flexDirection: 'column', gap: 12, animation: 'rjTabPane 180ms cubic-bezier(.2,.8,.3,1) both' }}
+              >
                 <div style={sectionTitleStyle}>語音辨識效能</div>
                 <div style={rowStyle}>
                   <span style={{ fontSize: 12, color: theme.textSecondary, flexShrink: 0, width: 90 }}>Compute type</span>
-                  <select
+                  <CustomSelect
+                    theme={theme}
                     value={computeType}
                     disabled={savingCompute}
-                    onChange={(e) => handleComputeTypeChange(e.target.value)}
-                    style={{
-                      flex: 1,
-                      background: theme.inputBg,
-                      color: theme.textPrimary,
-                      border: 'none',
-                      borderRadius: 7,
-                      padding: '7px 9px',
-                      fontSize: 12,
-                      fontWeight: 600,
-                      outline: 'none',
-                    }}
-                  >
-                    {COMPUTE_TYPES.map((c) => (
-                      <option key={c.value} value={c.value}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={handleComputeTypeChange}
+                    options={COMPUTE_TYPES}
+                    ariaLabel="Compute type"
+                    style={{ flex: 1, width: 'auto', background: theme.inputBg, border: 'none', fontWeight: 600 }}
+                  />
                 </div>
                 <div style={rowStyle}>
                   <span style={{ fontSize: 12, color: theme.textSecondary, flexShrink: 0, width: 90 }}>Device</span>
@@ -377,7 +375,10 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
             )}
 
             {activeTab === 'storage' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div
+                className="rj-tab-pane"
+                style={{ display: 'flex', flexDirection: 'column', gap: 12, animation: 'rjTabPane 180ms cubic-bezier(.2,.8,.3,1) both' }}
+              >
                 <div style={sectionTitleStyle}>影片與字幕儲存位置</div>
                 <div style={{ ...rowStyle, gap: 10 }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ color: theme.textTertiary, flexShrink: 0 }}>

@@ -28,7 +28,13 @@ export function getTheme(dark) {
         trackBg: 'rgba(255,255,255,0.12)',
         toggleTrack: 'rgba(255,255,255,0.14)',
         playBtnBg: 'rgba(255,255,255,0.12)',
-        popGlassBg: 'rgba(255,255,255,0.065)',
+        // Popover glass: a DARK, mostly-opaque frosted fill (handoff §5's
+        // `rgba(30,30,33,0.85)`) rather than a near-transparent white tint.
+        // The old translucent-white value let bright backgrounds (the ambient
+        // red glow, a light video frame) bleed through and wash out the dim
+        // description text inside AddToQueuePopover / SettingsPopover. This
+        // keeps the blur/saturate frosted look but gives text a stable surface.
+        popGlassBg: 'rgba(30,30,33,0.85)',
         popGlassBorder: 'rgba(255,255,255,0.12)',
       }
     : {

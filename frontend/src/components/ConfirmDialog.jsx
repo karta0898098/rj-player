@@ -42,6 +42,7 @@ export default function ConfirmDialog({
   return (
     <div
       onPointerDown={onCancel}
+      className="rj-backdrop-in"
       style={{
         position: 'fixed',
         inset: 0,
@@ -51,14 +52,17 @@ export default function ConfirmDialog({
         alignItems: 'center',
         justifyContent: 'center',
         padding: 20,
+        animation: 'rjBackdropIn 160ms ease both',
       }}
     >
       <div
         role="dialog"
         aria-modal="true"
         onPointerDown={(e) => e.stopPropagation()}
+        className="rj-pop-in"
         style={{
           width: 'min(92vw, 400px)',
+          animation: 'rjPopIn 200ms cubic-bezier(.2,.8,.3,1) both',
           background: theme.winBg,
           backdropFilter: 'blur(40px) saturate(160%)',
           WebkitBackdropFilter: 'blur(40px) saturate(160%)',

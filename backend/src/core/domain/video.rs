@@ -108,6 +108,19 @@ pub struct VideoMeta {
     /// `source_lang`/`queued_options`.
     #[serde(default)]
     pub max_height: Option<u32>,
+    /// The actual language of the manual source CC that `fetch_captions`
+    /// picked for this video, when one was found (e.g. `"ja"`/`"en"`). May
+    /// differ from `source_lang`: the source-CC search accepts the selected
+    /// `source_lang` first, then falls back to `en`/`ja` (dsd.md §12.7's
+    /// ASR-skip broadening), so a video whose `source_lang` is `ja` but which
+    /// only ships an English manual CC lands here as `"en"`. The pipeline
+    /// uses THIS (not `source_lang`) as the worker's source language whenever
+    /// a source CC exists, so romaji/translation match the CC's real
+    /// language. `None` means no source CC was found (Whisper ASR will run
+    /// against `source_lang` as before). `#[serde(default)]` for the same
+    /// on-disk-compat reason as `source_lang`/`max_height`.
+    #[serde(default)]
+    pub source_cc_lang: Option<String>,
 }
 
 impl VideoMeta {
@@ -127,6 +140,7 @@ impl VideoMeta {
             queued_options: None,
             source_lang: None,
             max_height: None,
+            source_cc_lang: None,
         }
     }
 }

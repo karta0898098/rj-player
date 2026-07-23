@@ -134,17 +134,41 @@ export const GENERATION_SETTINGS_DEFAULTS = {
   vadMaxSpeechS: 15,
 };
 
-// Applied on top of GENERATION_SETTINGS_DEFAULTS in the add-to-queue form
-// when a video is auto-detected (or manually flagged) as a music MV: hints
-// Whisper this is sung lyrics rather than speech, and loosens two VAD knobs
-// since sung phrases have longer natural pauses and often run longer before
-// a break than a spoken sentence. threshold/speech_pad are left unchanged --
-// no evidence a different value helps for either case.
-export const MUSIC_GENERATION_PRESET = {
-  initialPrompt: 'これは音楽ビデオです。日本語の歌詞をできるだけ正確に書き起こしてください。',
+// The VAD loosening applied when a video is a music MV: sung phrases have
+// longer natural pauses and often run longer before a break than a spoken
+// sentence. Language-independent, so shared across source languages.
+// threshold/speech_pad are left unchanged -- no evidence a different value
+// helps either case.
+const MUSIC_VAD_PRESET = {
   vadMinSilenceMs: 500,
   vadMaxSpeechS: 20,
 };
+
+// The music-MV Whisper `initial_prompt` hint. Language-aware (dsd.md §12.7): a
+// music MV's source language is no longer always Japanese -- it may be English
+// -- so a ja-specific "日本語の歌詞" hint would mis-bias an English song. Each
+// prompt is written in / neutral to the chosen source language, and an unknown
+// source language gets no language-biased hint at all.
+function musicInitialPrompt(sourceLang) {
+  if (sourceLang === 'en') {
+    return 'This is a music video. Please transcribe the song lyrics as accurately as possible.';
+  }
+  if (sourceLang === 'ja') {
+    return 'これは音楽ビデオです。歌詞をできるだけ正確に書き起こしてください。';
+  }
+  return '';
+}
+
+// The full generation-settings patch applied on top of
+// GENERATION_SETTINGS_DEFAULTS in the add-to-queue form when a video is
+// auto-detected (or manually flagged) as a music MV, for the given source
+// language. Hints Whisper this is sung lyrics rather than speech + loosens VAD.
+export function musicPresetFor(sourceLang) {
+  return {
+    ...MUSIC_VAD_PRESET,
+    initialPrompt: musicInitialPrompt(sourceLang),
+  };
+}
 
 const GENERATION_SETTINGS_STORAGE_KEY = 'rj-player.generationSettings';
 

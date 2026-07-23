@@ -23,6 +23,16 @@ use crate::core::domain::{SubtitleDoc, VideoMeta};
 /// rename lands). Matters now that in-place subtitle edits make these saves
 /// frequent and user-triggered, not just once-per-pipeline-run.
 async fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    // Ensure the parent exists immediately before writing, not just via the
+    // caller's earlier `ensure_video_dir`: a `save_*` that succeeds its
+    // create-dir check but then loses the directory to a concurrent
+    // `delete_video` (user deletes a video mid-pipeline) would otherwise fail
+    // the tmp write with a bare ENOENT ("No such file or directory (os error
+    // 2)"). `create_dir_all` is idempotent, so this is a no-op in the normal
+    // case and closes that TOCTOU window in the racy one.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, bytes).await?;
     fs::rename(&tmp, path).await?;

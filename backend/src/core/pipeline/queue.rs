@@ -300,19 +300,25 @@ async fn process_download_job(
     // ASR / LLM translation as needed.
     let cc_path = store.cc_path(&video_id);
     let target_cc_path = store.target_cc_path(&video_id);
-    let source_lang = meta.source_lang.as_deref().unwrap_or("ja");
+    let source_lang = meta.source_lang.clone().unwrap_or_else(|| "ja".to_string());
     match ytdlp
-        .fetch_captions(&url, &cc_path, &target_cc_path, source_lang)
+        .fetch_captions(&url, &cc_path, &target_cc_path, &source_lang)
         .await
     {
-        Ok((source_found, target_found)) => {
+        Ok((source_cc_lang, target_found)) => {
             tracing::info!(
-                %video_id, source_lang, source_found, target_found,
-                "manual CC fetch done (source-language CC found?, Chinese CC found?)"
+                %video_id, %source_lang, ?source_cc_lang, target_found,
+                "manual CC fetch done (which source-CC language landed?, Chinese CC found?)"
             );
+            // Persist the ACTUAL source-CC language so the pipeline feeds it
+            // (not the selected `source_lang`) to the worker: they differ when
+            // the selected language had no manual CC but an en/ja one did
+            // (dsd.md §12.7's ASR-skip broadening). `None` when no source CC
+            // landed -- the pipeline then runs Whisper against `source_lang`.
+            meta.source_cc_lang = source_cc_lang;
         }
         Err(err) => {
-            tracing::warn!(%video_id, source_lang, %err, "manual CC fetch failed (non-fatal)");
+            tracing::warn!(%video_id, %source_lang, %err, "manual CC fetch failed (non-fatal)");
             hub.publish(
                 &video_id,
                 JobEvent::Log {

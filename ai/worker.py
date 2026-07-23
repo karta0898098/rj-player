@@ -157,7 +157,7 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             # (segments, duration_ms); nothing downstream needs to know or
             # care which one ran.
             raw_segments, duration_ms = cc.load_cc(cc_path, audio_path)
-            protocol.log(f"[cc] using official Japanese CC ({len(raw_segments)} cues)")
+            protocol.log(f"[cc] using official {source_lang} CC ({len(raw_segments)} cues)")
             source = "cc"
         else:
             raw_segments, duration_ms = asr.transcribe(
