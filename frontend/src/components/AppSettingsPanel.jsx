@@ -143,6 +143,15 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
     }
   }
 
+  // Re-show the first-run setup wizard on demand — previously only reachable
+  // via a `?setup` URL query param (dev-only; the release bundle has no
+  // devtools/address bar to add it from), which meant resetting on Windows
+  // required manually finding + deleting the WebView2 data folder.
+  function handleRerunWizard() {
+    localStorage.removeItem('rj_setup_done');
+    window.location.reload();
+  }
+
   if (!open) return null;
 
   const rowStyle = {
@@ -478,6 +487,22 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
                     ))}
                   </div>
                 )}
+
+                <div style={{ height: 1, background: theme.hairline, margin: '4px 0' }} />
+
+                <div style={sectionTitleStyle}>設定精靈</div>
+                <div style={{ ...rowStyle, gap: 10 }}>
+                  <span style={{ fontSize: 12, color: theme.textSecondary, flex: 1 }}>
+                    重新執行首次啟動的設定精靈（環境檢查、模型下載…）
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmTarget({ type: 'rerunWizard' })}
+                    style={smallBtnStyle}
+                  >
+                    重新執行
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -487,18 +512,30 @@ export default function AppSettingsPanel({ theme, dark, onDarkModeChange, open, 
       <ConfirmDialog
         open={Boolean(confirmTarget)}
         theme={theme}
-        title={confirmTarget?.type === 'all' ? '清除全部模型快取？' : `刪除「${confirmTarget?.name}」模型？`}
+        title={
+          confirmTarget?.type === 'all'
+            ? '清除全部模型快取？'
+            : confirmTarget?.type === 'rerunWizard'
+              ? '重新執行設定精靈？'
+              : `刪除「${confirmTarget?.name}」模型？`
+        }
         message={
           confirmTarget?.type === 'all'
             ? '所有已下載的 Whisper 模型都會被移除，下次使用時需要重新下載。'
-            : '下次選用這個模型時需要重新下載。'
+            : confirmTarget?.type === 'rerunWizard'
+              ? '應用程式會重新整理並跳出設定精靈，目前的播放進度不會被保留。'
+              : '下次選用這個模型時需要重新下載。'
         }
-        confirmLabel="刪除"
-        danger
+        confirmLabel={confirmTarget?.type === 'rerunWizard' ? '重新執行' : '刪除'}
+        danger={confirmTarget?.type !== 'rerunWizard'}
         onConfirm={() => {
           const target = confirmTarget;
           setConfirmTarget(null);
-          performDelete(target);
+          if (target.type === 'rerunWizard') {
+            handleRerunWizard();
+          } else {
+            performDelete(target);
+          }
         }}
         onCancel={() => setConfirmTarget(null)}
       />
