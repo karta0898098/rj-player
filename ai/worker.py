@@ -25,6 +25,12 @@ Methods:
                          already filled in, from an existing subtitles.json)
                          -- no ASR. Same terminal `result`/`error` shape as
                          generate_subtitles.
+  tokenize           -> {"text":.., "source_lang":..} -> one `tokenized` event
+                         {"tokens":[..], "phonetic":".."} for a single line.
+                         Used when the user manually edits a cue's Japanese
+                         text so the ruby/romaji regenerate instead of being
+                         dropped. Only reading-profile languages (ja) produce
+                         tokens; others return []/"". Never touches Whisper/LLM.
   shutdown           -> emits a result, then exits cleanly.
 
 Standalone self-test (no Rust side needed):
@@ -69,6 +75,35 @@ def handle_ping(req_id) -> None:
 
 def handle_shutdown(req_id) -> None:
     protocol.emit({"id": req_id, "event": "result", "ok": True})
+
+
+def run_tokenize(req_id, params: dict, emit_fn=protocol.emit) -> None:
+    """Tokenize one line: `source_text` -> `{tokens, phonetic}` for the ruby +
+    romaji layers.
+
+    A lightweight companion to run_generate_subtitles' tokenize+romaji stages
+    (reuses the exact same `tokenizer.tokenize` / `romaji.build_romaji`), called
+    by the backend when a user manually edits a cue's Japanese text so the now-
+    stale furigana/romaji regenerate in place instead of being dropped. Only
+    source languages whose profile has `reading: True` produce tokens; everyone
+    else returns `[]`/`""`, matching run_generate_subtitles' skip. Never loads
+    Whisper or calls the LLM, so it stays fast.
+    """
+    text = params.get("text") or ""
+    source_lang = params.get("source_lang", "ja")
+    try:
+        if profile_for(source_lang).get("reading") and text.strip():
+            # Lazy import (see the module-level import note): keep fugashi/
+            # pykakasi off the hot path for callers that never tokenize.
+            from pipeline import romaji, tokenizer  # lazy: see import note up top
+
+            tokens = tokenizer.tokenize(text)
+            phonetic = romaji.build_romaji(tokens)
+        else:
+            tokens, phonetic = [], ""
+        emit_fn({"id": req_id, "event": "tokenized", "tokens": tokens, "phonetic": phonetic})
+    except Exception as e:  # noqa: BLE001 -- report any failure to the caller, don't crash the worker
+        emit_fn({"id": req_id, "event": "error", "message": f"tokenize failed: {e}"})
 
 
 def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict | None:
@@ -442,6 +477,8 @@ def main() -> None:
             run_generate_subtitles(req_id, params)
         elif method == "retranslate":
             run_retranslate(req_id, params)
+        elif method == "tokenize":
+            run_tokenize(req_id, params)
         elif method == "shutdown":
             handle_shutdown(req_id)
             break

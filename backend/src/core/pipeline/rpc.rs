@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::core::domain::{Cue, Stage, SubtitleDoc};
+use crate::core::domain::{Cue, Stage, SubtitleDoc, Token};
 
 #[derive(Debug, Error)]
 pub enum RpcError {
@@ -115,6 +115,16 @@ pub struct RetranslateParams {
     pub source: Option<String>,
 }
 
+/// Params for the `tokenize` RPC method — regenerate one line's `tokens`
+/// (furigana) + `phonetic` (romaji) after a manual `source_text` edit, without
+/// re-running ASR/translate. The worker returns `[]`/`""` for non-reading
+/// source languages (see `ai/worker.py`'s `run_tokenize`).
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenizeParams {
+    pub text: String,
+    pub source_lang: String,
+}
+
 /// The 4 Silero VAD knobs `ai/pipeline/asr.py`'s `transcribe(...)` accepts
 /// as `vad_overrides`. Each field omitted from the outbound JSON when
 /// `None`, so the worker's dict-merge only overrides what was actually
@@ -197,6 +207,14 @@ enum WorkerEventPayload {
     /// implied by "ping (health check / dev-time echo)"; kept as a distinct
     /// tag so it can never be mistaken for a `generate_subtitles` result.
     Pong,
+    /// Terminal response to `tokenize` (worker `event: "tokenized"`) — the
+    /// regenerated ruby tokens + romaji for one edited line. A distinct event
+    /// tag (not `result`) so it's never confused with a full
+    /// `generate_subtitles` result, which carries `subtitles` instead.
+    Tokenized {
+        tokens: Vec<Token>,
+        phonetic: String,
+    },
 }
 
 /// One line read from the worker's stdout, pre-parse-failure-checked.
@@ -388,6 +406,9 @@ impl RpcClient {
                     WorkerEventPayload::Pong => {
                         tracing::warn!("unexpected pong event during generate_subtitles");
                     }
+                    WorkerEventPayload::Tokenized { .. } => {
+                        tracing::warn!("unexpected tokenized event during generate_subtitles");
+                    }
                 },
                 Some(Ok(_stale)) => continue, // event for a previous/unrelated request id
                 Some(Err(err)) => {
@@ -457,6 +478,68 @@ impl RpcClient {
                     }
                     WorkerEventPayload::Pong => {
                         tracing::warn!("unexpected pong event during retranslate");
+                    }
+                    WorkerEventPayload::Tokenized { .. } => {
+                        tracing::warn!("unexpected tokenized event during retranslate");
+                    }
+                },
+                Some(Ok(_stale)) => continue, // event for a previous/unrelated request id
+                Some(Err(err)) => {
+                    Self::drop_process(&mut guard).await;
+                    return Err(err);
+                }
+                None => {
+                    Self::drop_process(&mut guard).await;
+                    return Err(RpcError::WorkerExited);
+                }
+            }
+        }
+    }
+
+    /// Regenerate one line's ruby `tokens` + `phonetic` (romaji) after a
+    /// manual `source_text` edit (dsd.md §4.2 furigana invariant). Blocks until
+    /// the worker's terminal `tokenized`/`error` event. Cheap: no ASR/LLM, no
+    /// Whisper load. Shares the same process mutex as every other call, so if a
+    /// pipeline job is mid-flight this waits for it — acceptable on this
+    /// single-user tool where edits happen after a video is already `Ready`.
+    pub async fn tokenize(&self, params: TokenizeParams) -> Result<(Vec<Token>, String), RpcError> {
+        let id = format!("req-{}", Uuid::new_v4());
+        let line = serde_json::to_string(&RpcRequest {
+            id: &id,
+            method: "tokenize",
+            params,
+        })?;
+
+        let mut guard = self.process.lock().await;
+        self.ensure_spawned(&mut guard).await?;
+        let proc = guard.as_mut().expect("just ensured spawned");
+
+        if let Err(err) = proc.write_line(&line).await {
+            Self::drop_process(&mut guard).await;
+            return Err(err);
+        }
+
+        loop {
+            let proc = guard.as_mut().expect("still spawned");
+            match proc.events_rx.recv().await {
+                Some(Ok(env)) if env.id == id => match env.payload {
+                    WorkerEventPayload::Tokenized { tokens, phonetic } => {
+                        return Ok((tokens, phonetic))
+                    }
+                    WorkerEventPayload::Error {
+                        stage,
+                        message,
+                        partial,
+                    } => {
+                        return Err(RpcError::Worker {
+                            stage,
+                            message,
+                            partial,
+                        });
+                    }
+                    other => {
+                        tracing::warn!(?other, "unexpected event in reply to tokenize");
+                        continue;
                     }
                 },
                 Some(Ok(_stale)) => continue, // event for a previous/unrelated request id

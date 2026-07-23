@@ -315,6 +315,33 @@ export function clearResumePosition(videoId) {
   }
 }
 
+// ---- persisted player volume ----------------------------------------------
+// Default is max (100); once the user adjusts it the choice is remembered
+// across reloads. Single 0..100 scalar, same tolerant localStorage pattern as
+// the maps above. Single-machine personal tool, so localStorage is the right
+// home (no backend round-trip).
+export const DEFAULT_VOLUME = 100;
+const VOLUME_STORAGE_KEY = 'rj-player.volume';
+
+export function loadVolume() {
+  try {
+    const raw = localStorage.getItem(VOLUME_STORAGE_KEY);
+    if (raw === null) return DEFAULT_VOLUME;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 && n <= 100 ? n : DEFAULT_VOLUME;
+  } catch {
+    return DEFAULT_VOLUME;
+  }
+}
+
+export function saveVolume(v) {
+  try {
+    localStorage.setItem(VOLUME_STORAGE_KEY, String(v));
+  } catch {
+    // ignore — storage unavailable or full
+  }
+}
+
 // ---- subtitle export (SRT / LRC / bilingual TXT) --------------------------
 // `formatTime` above is only M:SS (playback UI), so these are separate,
 // export-shaped timestamp formatters taking milliseconds (the unit on every

@@ -34,6 +34,9 @@ import {
   loadResumePositions,
   saveResumePosition,
   clearResumePosition,
+  loadVolume,
+  saveVolume,
+  DEFAULT_VOLUME,
 } from './utils.js';
 import {
   createVideo,
@@ -48,6 +51,7 @@ import {
   cancelQueueItem,
   deleteVideo,
   patchCue,
+  replaceCues,
 } from './api.js';
 
 // ---- fullscreen helpers (module-level; guard for browsers without the
@@ -133,8 +137,10 @@ export default function App() {
   // into one big awkward blank strip). VideoStage sizes itself to this
   // instead so the box always matches the video exactly, no letterboxing.
   const [videoAspectRatio, setVideoAspectRatio] = useState(null);
-  const [volume, setVolume] = useState(70);
-  const lastVolumeRef = useRef(70);
+  // Default is max (100); persisted to localStorage so a user's adjustment
+  // survives reloads (loadVolume/saveVolume in utils.js).
+  const [volume, setVolume] = useState(() => loadVolume());
+  const lastVolumeRef = useRef(volume);
   const [speed, setSpeed] = useState(1);
 
   // ---- subtitle layer toggles + style (B3.3 — wired to SubtitleOverlay) ----
@@ -718,6 +724,22 @@ export default function App() {
     }
   }
 
+  // Bulk cue-list replacement — edit-mode structural ops (split / merge /
+  // insert / delete) and timing changes that can reorder cues. The backend
+  // validates, re-sorts by start time, re-tokenizes any cue with cleared
+  // tokens, and returns the whole doc, so we adopt its `cues` verbatim rather
+  // than patching in place (which couldn't reflect a reorder or new/removed
+  // rows).
+  async function replaceCuesEdit(nextCues) {
+    if (!videoId) return;
+    try {
+      const doc = await replaceCues(videoId, nextCues);
+      setCues(doc.cues || []);
+    } catch (err) {
+      setSubtitleError(err.message || '字幕儲存失敗');
+    }
+  }
+
   // ---- subtitle export (P1) ---------------------------------------------
   // Builds the chosen format client-side from the loaded cues, then saves it.
   // On desktop (Tauri) a native "Save as…" panel is used, because the browser
@@ -1040,9 +1062,14 @@ export default function App() {
   function onVolumeChange(val) {
     setVolume(val);
     if (val > 0) lastVolumeRef.current = val;
+    saveVolume(val);
   }
   function toggleMute() {
-    setVolume((prev) => (prev > 0 ? 0 : lastVolumeRef.current || 70));
+    setVolume((prev) => {
+      const next = prev > 0 ? 0 : lastVolumeRef.current || DEFAULT_VOLUME;
+      saveVolume(next);
+      return next;
+    });
   }
 
   // ---- resume position + auto-advance (P2) ------------------------------
@@ -1560,6 +1587,7 @@ export default function App() {
                   targetSource={docTargetSource}
                   onSeekToCue={seekToCue}
                   onEditCue={editCue}
+                  onReplaceCues={replaceCuesEdit}
                   onExport={handleExportSubtitles}
                 />
               ) : (

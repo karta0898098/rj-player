@@ -47,6 +47,10 @@ pub fn build_router(state: SharedState, dist_dir: &Path) -> Router {
         .route("/api/videos/:id/events", get(ws::video_events))
         .route("/api/videos/:id/subtitles", get(subtitles::get_subtitles))
         .route(
+            "/api/videos/:id/subtitles/cues",
+            put(subtitles::replace_cues),
+        )
+        .route(
             "/api/videos/:id/subtitles/cues/:cue_id",
             put(subtitles::patch_cue),
         )

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::core::doctor::DoctorHub;
 use crate::core::downloader::YtDlp;
-use crate::core::pipeline::{EventHub, JobSender};
+use crate::core::pipeline::{EventHub, JobSender, RpcClient};
 use crate::core::store::FsStore;
 
 /// Shared application state, cheaply cloneable via `Arc` (axum `State`
@@ -23,6 +23,12 @@ pub struct AppState {
     /// Broadcast hub for Doctor repair-action progress (dsd.md §13.4). Its
     /// single-run guard also serialises fixes so two can't clash.
     pub doctor_hub: Arc<DoctorHub>,
+    /// The same persistent AI worker client the job queue uses (shared `Arc`),
+    /// exposed so the subtitle-edit handler can regenerate one line's
+    /// furigana/romaji directly (`tokenize` RPC) after a manual `source_text`
+    /// edit. Its internal process mutex serialises this against any in-flight
+    /// pipeline job, so there's no risk of interleaving on the worker's stdio.
+    pub rpc: Arc<RpcClient>,
 }
 
 pub type SharedState = Arc<AppState>;

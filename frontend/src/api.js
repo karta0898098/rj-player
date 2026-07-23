@@ -272,3 +272,23 @@ export async function patchCue(id, cueId, patch) {
   }
   return res.json();
 }
+
+/**
+ * PUT /api/videos/:id/subtitles/cues — replace the whole cue list in one shot
+ * (edit-mode split / merge / insert / delete). Any cue whose `tokens` array is
+ * empty and whose `source_text` is non-empty is re-tokenized server-side (its
+ * furigana/romaji rebuilt), so callers should clear `tokens`/`phonetic` on any
+ * cue they structurally change. The backend validates (`start < end`, unique
+ * ids), re-sorts by start time, and returns the saved SubtitleDoc.
+ */
+export async function replaceCues(id, cues) {
+  const res = await fetch(`/api/videos/${id}/subtitles/cues`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cues }),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res));
+  }
+  return res.json();
+}

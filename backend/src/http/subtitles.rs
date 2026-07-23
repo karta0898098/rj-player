@@ -10,7 +10,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::core::domain::{JobEvent, Stage, VideoStatus};
+use crate::core::domain::{Cue, JobEvent, Stage, VideoStatus};
+use crate::core::pipeline::rpc::TokenizeParams;
 use crate::core::pipeline::{Job, PipelineOverrides, VadOverrides};
 use crate::http::error::ApiError;
 use crate::state::SharedState;
@@ -230,6 +231,55 @@ pub struct CuePatch {
     /// missing" degrade the overlay already handles.
     #[serde(default)]
     pub target_text: Option<String>,
+    /// New cue start, in milliseconds. Applied together with `end_ms`; the
+    /// resulting `[start, end)` is rejected (`400`) if `start >= end`. Used by
+    /// the edit-mode timing controls to fix ASR boundary drift.
+    #[serde(default)]
+    pub start_ms: Option<u64>,
+    /// New cue end, in milliseconds. See `start_ms`.
+    #[serde(default)]
+    pub end_ms: Option<u64>,
+}
+
+/// Whether a source language runs the tokenize+romaji (`reading`) stages, so an
+/// edited `source_text` should have its furigana/romaji regenerated rather than
+/// just cleared. Mirrors the single `reading: true` entry in `ai/worker.py`'s
+/// `PROFILES` (today: `ja`) — that matrix is the source of truth; keep this in
+/// step if a new reading language is added there.
+fn is_reading_lang(lang: &str) -> bool {
+    lang == "ja"
+}
+
+/// Regenerate a cue's ruby `tokens` + `phonetic` from its (edited) `source_text`
+/// via the AI worker's `tokenize` RPC. For non-reading languages or blank text
+/// there's nothing to generate, so we just clear both. On any worker failure we
+/// also fall back to clearing (the overlay then renders the plain `source_text`)
+/// rather than failing the whole save — a manual text fix must not be lost to a
+/// furigana hiccup.
+async fn retokenize_cue(state: &SharedState, doc_lang: &str, cue: &mut Cue) {
+    if !is_reading_lang(doc_lang) || cue.source_text.trim().is_empty() {
+        cue.tokens = Vec::new();
+        cue.phonetic = String::new();
+        return;
+    }
+    match state
+        .rpc
+        .tokenize(TokenizeParams {
+            text: cue.source_text.clone(),
+            source_lang: doc_lang.to_string(),
+        })
+        .await
+    {
+        Ok((tokens, phonetic)) => {
+            cue.tokens = tokens;
+            cue.phonetic = phonetic;
+        }
+        Err(err) => {
+            tracing::warn!(%err, cue_id = cue.id, "tokenize failed on cue edit; clearing furigana/romaji");
+            cue.tokens = Vec::new();
+            cue.phonetic = String::new();
+        }
+    }
 }
 
 /// `PUT /api/videos/:id/subtitles/cues/:cue_id` — persist a manual edit to one
@@ -255,17 +305,35 @@ pub async fn patch_cue(
         .await?
         .ok_or_else(|| ApiError::bad_request("no subtitles.json to edit; run the pipeline first"))?;
 
+    // Captured before the `&mut cue` borrow below (can't read `doc.language_source`
+    // while `doc.cues` is mutably borrowed).
+    let doc_lang = doc.language_source.clone();
+
     let cue = doc
         .cues
         .iter_mut()
         .find(|c| c.id == cue_id)
         .ok_or_else(|| ApiError::not_found(format!("no cue with id {cue_id} in this video")))?;
 
+    // Timing: apply start/end together so the `start < end` invariant is checked
+    // against the final pair, whichever of the two the caller sent.
+    if patch.start_ms.is_some() || patch.end_ms.is_some() {
+        let new_start = patch.start_ms.unwrap_or(cue.start_ms);
+        let new_end = patch.end_ms.unwrap_or(cue.end_ms);
+        if new_start >= new_end {
+            return Err(ApiError::bad_request(format!(
+                "cue start_ms ({new_start}) must be < end_ms ({new_end})"
+            )));
+        }
+        cue.start_ms = new_start;
+        cue.end_ms = new_end;
+    }
+
+    let mut source_changed = false;
     if let Some(source_text) = patch.source_text {
         if source_text != cue.source_text {
             cue.source_text = source_text;
-            cue.tokens = Vec::new();
-            cue.phonetic = String::new();
+            source_changed = true;
         }
     }
     if let Some(target_text) = patch.target_text {
@@ -276,8 +344,78 @@ pub async fn patch_cue(
         };
     }
 
+    // Regenerate furigana/romaji for the new Japanese text (falls back to
+    // clearing them if the worker is unavailable — see `retokenize_cue`).
+    if source_changed {
+        retokenize_cue(&state, &doc_lang, cue).await;
+    }
+
     let updated = cue.clone();
     state.store.save_subtitles(&doc).await?;
 
     Ok(Json(updated))
+}
+
+/// Request body for `PUT /api/videos/:id/subtitles/cues` — the full replacement
+/// cue list. Used by edit-mode's structural operations (split / merge / insert /
+/// delete), which the frontend expresses as an edited array rather than as a
+/// stream of per-cue patches.
+#[derive(Debug, Deserialize)]
+pub struct ReplaceCuesBody {
+    pub cues: Vec<Cue>,
+}
+
+/// `PUT /api/videos/:id/subtitles/cues` — replace the whole cue list in one
+/// shot (edit-mode split/merge/insert/delete). Validates that every cue has
+/// `start < end` and that ids are unique, then re-sorts by start time (the
+/// overlay + list both assume start-ordered cues). Any cue the frontend marked
+/// for regeneration — empty `tokens` with non-empty `source_text` — has its
+/// furigana/romaji rebuilt via the worker; untouched cues keep theirs and skip
+/// the round-trip. Returns the saved doc so the frontend can refresh in place.
+pub async fn replace_cues(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(body): Json<ReplaceCuesBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    state
+        .store
+        .load_meta(&id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("no video with id {id}")))?;
+
+    let mut doc = state
+        .store
+        .load_subtitles(&id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("no subtitles.json to edit; run the pipeline first"))?;
+    let doc_lang = doc.language_source.clone();
+
+    let mut cues = body.cues;
+    let mut seen = std::collections::HashSet::new();
+    for c in &cues {
+        if c.start_ms >= c.end_ms {
+            return Err(ApiError::bad_request(format!(
+                "cue {} has start_ms ({}) >= end_ms ({})",
+                c.id, c.start_ms, c.end_ms
+            )));
+        }
+        if !seen.insert(c.id) {
+            return Err(ApiError::bad_request(format!("duplicate cue id {}", c.id)));
+        }
+    }
+    cues.sort_by_key(|c| (c.start_ms, c.end_ms));
+
+    // Rebuild furigana/romaji only for cues the frontend flagged (tokens
+    // cleared) — split/merged/inserted lines. Untouched cues carry their
+    // existing tokens through and skip the worker entirely.
+    for c in cues.iter_mut() {
+        if c.tokens.is_empty() && !c.source_text.trim().is_empty() {
+            retokenize_cue(&state, &doc_lang, c).await;
+        }
+    }
+
+    doc.cues = cues;
+    state.store.save_subtitles(&doc).await?;
+
+    Ok(Json(doc))
 }
