@@ -602,6 +602,23 @@ export default function App() {
     if (videoRef.current) videoRef.current.volume = volume / 100;
   }, [volume, videoSrc]);
 
+  // Autoplay a freshly-loaded video (auto-advance to the next queued track, or
+  // a manual playlist/library pick) the moment its <video> mounts with the new
+  // src -- driven off `videoSrc` rather than the <video>'s `canplay` event.
+  // `preload="metadata"` means the browser fetches only metadata and then
+  // suspends, so `canplay` (readyState >= HAVE_FUTURE_DATA) may never fire on
+  // its own; waiting for it left the next track loaded-but-paused. Calling
+  // play() directly kicks off buffering AND playback (and, in turn, makes
+  // `canplay` eventually fire so handleCanPlay can still clear autoAdvanceRef).
+  // The desktop app additionally needs the webview's `autoplay(true)`
+  // (src-tauri/src/lib.rs) for this play() to be allowed without a gesture.
+  useEffect(() => {
+    if (!videoSrc || !shouldAutoplayRef.current) return;
+    shouldAutoplayRef.current = false;
+    videoRef.current?.play().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoSrc]);
+
   // ---- subtitle pipeline status (B3.4) ---------------------------------
   // Maps a backend VideoStatus (from a WS `status`/`done` event, or from a
   // fresh GET /api/videos/:id) onto the overlay's pipeline-progress state.
