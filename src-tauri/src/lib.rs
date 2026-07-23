@@ -169,8 +169,26 @@ fn resolve_config(handle: &AppHandle) -> Config {
     // AI worker: point at the repo's Python service so subtitle generation uses
     // the existing venv (the B6.2 "走系統既有環境暫代" bridge; B6.4 bundles a
     // managed runtime). Absolute so it resolves when launched from Finder.
+    //
+    // Dev: dev_path("ai") (CARGO_MANIFEST_DIR is only valid on the machine
+    // that compiled the binary). Bundle: dev_path("ai") would resolve to the
+    // *build* machine's checkout (e.g. the CI runner's `/Users/runner/work/…`),
+    // which doesn't exist on the end user's machine — use the copy bundled
+    // into app resources instead (dsd.md §13, worker.py/pipeline/requirements.txt
+    // declared under `bundle.resources` in tauri.conf.json).
     if std::env::var_os("AI_DIR").is_none() {
-        std::env::set_var("AI_DIR", dev_path("ai"));
+        let ai_dir = if cfg!(debug_assertions) {
+            dev_path("ai")
+        } else {
+            handle
+                .path()
+                .resource_dir()
+                .ok()
+                .map(|r| r.join("ai"))
+                .filter(|p| p.join("worker.py").is_file())
+                .unwrap_or_else(|| dev_path("ai"))
+        };
+        std::env::set_var("AI_DIR", ai_dir);
     }
 
     // Managed Python runtime + model cache (dsd §13.2/§13.4): everything the
