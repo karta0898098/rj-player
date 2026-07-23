@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::core::domain::{Cue, Stage, SubtitleDoc, Token};
+use crate::core::process::HideConsole;
 
 #[derive(Debug, Error)]
 pub enum RpcError {
@@ -591,6 +592,7 @@ impl RpcClient {
     async fn spawn_worker(&self) -> Result<WorkerProcess, RpcError> {
         let mut command = Command::new(&self.python);
         command
+            .hide_console()
             .args(&self.worker_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

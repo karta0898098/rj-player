@@ -12,6 +12,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use crate::core::process::HideConsole;
+
 #[derive(Debug, Error)]
 pub enum DownloaderError {
     #[error("could not extract an 11-character YouTube video id from url: {0}")]
@@ -195,6 +197,7 @@ impl YtDlp {
     /// Fetch title/channel/duration for a video without downloading it.
     pub async fn fetch_metadata(&self, url: &str) -> Result<VideoMetadata, DownloaderError> {
         let output = Command::new(&self.bin)
+            .hide_console()
             .args(["-J", "--no-warnings", "--no-playlist", url])
             .stdin(Stdio::null())
             .output()
@@ -289,6 +292,7 @@ impl YtDlp {
         let dest_str = dest_path.to_string_lossy().to_string();
 
         let mut child = Command::new(&self.bin)
+            .hide_console()
             .args([
                 "-f",
                 format,
@@ -431,6 +435,7 @@ impl YtDlp {
             .join(",");
 
         let output = Command::new(&self.bin)
+            .hide_console()
             .args([
                 "--write-subs",
                 "--sub-langs",
@@ -514,6 +519,7 @@ impl YtDlp {
         args.push(url.to_string());
 
         let output = Command::new(&self.bin)
+            .hide_console()
             .args(&args)
             .stdin(Stdio::null())
             .output()
@@ -541,6 +547,7 @@ impl YtDlp {
         }
 
         let output = Command::new(&self.ffmpeg_bin)
+            .hide_console()
             .args([
                 "-y",
                 "-i",

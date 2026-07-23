@@ -6,4 +6,5 @@ pub mod doctor;
 pub mod domain;
 pub mod downloader;
 pub mod pipeline;
+pub mod process;
 pub mod store;
