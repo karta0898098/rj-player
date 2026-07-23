@@ -1,92 +1,105 @@
 #!/usr/bin/env bash
 #
-# fetch-sidecars.sh — download the yt-dlp + ffmpeg sidecar binaries that the
-# Tauri desktop app bundles (dsd.md §13, B6.3).
+# fetch-sidecars.sh — download the yt-dlp + ffmpeg + uv sidecar binaries that
+# the Tauri desktop app bundles (dsd.md §13, B6.3 / B6.7).
 #
 # These are NOT committed (large + platform-specific); this directory is
 # gitignored except for this script. It runs at build time — wired as Tauri's
 # before{Dev,Build}Command — so a fresh checkout fetches them on first build.
 # Repeat runs are a fast no-op once the files exist (set FORCE=1 to refresh).
 #
-# File names follow Tauri's externalBin convention: <name>-<target-triple>.
-# yt-dlp ships a single universal2 macOS build; we keep only the arm64 copy.
+# File names follow Tauri's externalBin convention: <name>-<target-triple>
+# (plus `.exe` on Windows). Tauri picks the copy whose triple matches the build
+# target, so we only fetch the host platform's set here.
 #
-# Apple-silicon (arm64) only. Intel/x86_64 macOS is NOT supported — see the
-# git history if you ever need to re-add it. Windows is NOT fetched yet — the
-# same <name>-<triple> structure extends to it in B6.7; see the commented
-# WINDOWS block near the bottom for the starting point (yt-dlp.exe + ffmpeg.exe).
+# Supported host platforms:
+#   macOS  arm64  → aarch64-apple-darwin      (Apple Silicon only; no Intel)
+#   Windows x64   → x86_64-pc-windows-msvc     (run under Git-Bash, e.g. CI)
 #
 # Sources:
-#   yt-dlp : https://github.com/yt-dlp/yt-dlp  (official release, universal2)
-#   ffmpeg : https://ffmpeg.martin-riedl.de     (static macOS arm64 build)
+#   yt-dlp : https://github.com/yt-dlp/yt-dlp     (official releases)
+#   ffmpeg : macOS  → https://ffmpeg.martin-riedl.de  (static arm64)
+#            Windows → https://github.com/BtbN/FFmpeg-Builds  (static win64 gpl)
+#   uv     : https://github.com/astral-sh/uv       (official releases)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-YTDLP_MACOS_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-FFMPEG_ARM64_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
-# uv (the managed-Python installer / dep resolver the Doctor drives, dsd §13.4).
-UV_ARM64_URL="https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz"
-
-MAC_TRIPLES=("aarch64-apple-darwin")
-
-# All outputs we expect to produce; used for the fast-path skip.
-OUTPUTS=(
-  "yt-dlp-aarch64-apple-darwin"
-  "ffmpeg-aarch64-apple-darwin"
-  "uv-aarch64-apple-darwin"
-)
-
-all_present=1
-for f in "${OUTPUTS[@]}"; do [ -x "$f" ] || all_present=0; done
-if [ "$all_present" = 1 ] && [ "${FORCE:-}" != 1 ]; then
-  echo "✓ sidecars already present (set FORCE=1 to refresh)"
-  exit 0
-fi
+# --- host platform detection -----------------------------------------------
+# `uname -s` under Git-Bash / MSYS on Windows reports MINGW*/MSYS*/CYGWIN*.
+case "$(uname -s)" in
+  Darwin) HOST_OS="macos" ;;
+  MINGW*|MSYS*|CYGWIN*|Windows_NT) HOST_OS="windows" ;;
+  *) echo "unsupported host OS: $(uname -s) (only macOS arm64 + Windows x64 are wired)" >&2; exit 1 ;;
+esac
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "→ yt-dlp (universal2 macOS)…"
-curl -fSL --retry 3 -o "$tmp/yt-dlp_macos" "$YTDLP_MACOS_URL"
-for t in "${MAC_TRIPLES[@]}"; do
-  cp "$tmp/yt-dlp_macos" "yt-dlp-$t"
-  chmod +x "yt-dlp-$t"
-done
-
-fetch_ffmpeg() { # $1=url  $2=triple
-  local url="$1" triple="$2"
-  echo "→ ffmpeg ($triple)…"
-  curl -fSL --retry 3 -o "$tmp/ffmpeg-$triple.zip" "$url"
-  unzip -o -q "$tmp/ffmpeg-$triple.zip" -d "$tmp/ffmpeg-$triple"
+fetch_ffmpeg_zip() { # $1=url  $2=out-basename  — extracts the ffmpeg[.exe] inside
+  local url="$1" out="$2"
+  echo "→ ffmpeg → $out …"
+  curl -fSL --retry 3 -o "$tmp/ffmpeg.zip" "$url"
+  unzip -o -q "$tmp/ffmpeg.zip" -d "$tmp/ffmpeg"
   local bin
-  bin="$(find "$tmp/ffmpeg-$triple" -type f -name ffmpeg | head -1)"
-  [ -n "$bin" ] || { echo "ffmpeg binary not found in zip for $triple" >&2; exit 1; }
-  cp "$bin" "ffmpeg-$triple"
-  chmod +x "ffmpeg-$triple"
+  bin="$(find "$tmp/ffmpeg" -type f \( -name ffmpeg -o -name ffmpeg.exe \) | head -1)"
+  [ -n "$bin" ] || { echo "ffmpeg binary not found in zip" >&2; exit 1; }
+  cp "$bin" "$out"
+  chmod +x "$out"
 }
-fetch_ffmpeg "$FFMPEG_ARM64_URL" "aarch64-apple-darwin"
 
-fetch_uv() { # $1=url  $2=triple
-  local url="$1" triple="$2"
-  echo "→ uv ($triple)…"
-  curl -fSL --retry 3 -o "$tmp/uv-$triple.tar.gz" "$url"
-  tar -xzf "$tmp/uv-$triple.tar.gz" -C "$tmp"
-  local bin
-  bin="$(find "$tmp" -type f -name uv -path "*$triple*" | head -1)"
-  [ -n "$bin" ] || { echo "uv binary not found in archive for $triple" >&2; exit 1; }
-  cp "$bin" "uv-$triple"
-  chmod +x "uv-$triple"
-}
-fetch_uv "$UV_ARM64_URL" "aarch64-apple-darwin"
+if [ "$HOST_OS" = "macos" ]; then
+  TRIPLE="aarch64-apple-darwin"
+  OUTPUTS=("yt-dlp-$TRIPLE" "ffmpeg-$TRIPLE" "uv-$TRIPLE")
 
-# --- WINDOWS (B6.7 — not enabled yet) --------------------------------------
-# To add Windows, produce yt-dlp-x86_64-pc-windows-msvc.exe and
-# ffmpeg-x86_64-pc-windows-msvc.exe, add them to OUTPUTS above, and add
-# "x86_64-pc-windows-msvc" to the build's target list. Starting points:
-#   yt-dlp: https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
-#   ffmpeg: a static win64 build (e.g. gyan.dev / BtbN) — pick + verify in B6.7.
-# Left commented so this script stays macOS-only until then.
-# ---------------------------------------------------------------------------
+  all_present=1
+  for f in "${OUTPUTS[@]}"; do [ -x "$f" ] || all_present=0; done
+  if [ "$all_present" = 1 ] && [ "${FORCE:-}" != 1 ]; then
+    echo "✓ sidecars already present (set FORCE=1 to refresh)"; exit 0
+  fi
+
+  echo "→ yt-dlp (universal2 macOS) → yt-dlp-$TRIPLE …"
+  curl -fSL --retry 3 -o "yt-dlp-$TRIPLE" \
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+  chmod +x "yt-dlp-$TRIPLE"
+
+  fetch_ffmpeg_zip \
+    "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" \
+    "ffmpeg-$TRIPLE"
+
+  echo "→ uv → uv-$TRIPLE …"
+  curl -fSL --retry 3 -o "$tmp/uv.tar.gz" \
+    "https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz"
+  tar -xzf "$tmp/uv.tar.gz" -C "$tmp"
+  uvbin="$(find "$tmp" -type f -name uv | head -1)"
+  [ -n "$uvbin" ] || { echo "uv binary not found in archive" >&2; exit 1; }
+  cp "$uvbin" "uv-$TRIPLE"; chmod +x "uv-$TRIPLE"
+
+else # windows
+  TRIPLE="x86_64-pc-windows-msvc"
+  OUTPUTS=("yt-dlp-$TRIPLE.exe" "ffmpeg-$TRIPLE.exe" "uv-$TRIPLE.exe")
+
+  all_present=1
+  for f in "${OUTPUTS[@]}"; do [ -f "$f" ] || all_present=0; done
+  if [ "$all_present" = 1 ] && [ "${FORCE:-}" != 1 ]; then
+    echo "✓ sidecars already present (set FORCE=1 to refresh)"; exit 0
+  fi
+
+  echo "→ yt-dlp.exe → yt-dlp-$TRIPLE.exe …"
+  curl -fSL --retry 3 -o "yt-dlp-$TRIPLE.exe" \
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
+  fetch_ffmpeg_zip \
+    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" \
+    "ffmpeg-$TRIPLE.exe"
+
+  echo "→ uv.exe → uv-$TRIPLE.exe …"
+  curl -fSL --retry 3 -o "$tmp/uv.zip" \
+    "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
+  unzip -o -q "$tmp/uv.zip" -d "$tmp/uv"
+  uvbin="$(find "$tmp/uv" -type f -name uv.exe | head -1)"
+  [ -n "$uvbin" ] || { echo "uv.exe not found in archive" >&2; exit 1; }
+  cp "$uvbin" "uv-$TRIPLE.exe"
+fi
 
 echo "✓ sidecars ready:"
 ls -lh yt-dlp-* ffmpeg-* uv-* 2>/dev/null | awk '{print "   "$5"\t"$NF}'

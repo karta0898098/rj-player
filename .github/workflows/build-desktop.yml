@@ -1,0 +1,67 @@
+name: build-desktop
+
+# Build the Tauri desktop app on its native OSes (no cross-compile — WebView2 /
+# MSVC / NSIS on Windows and Xcode on macOS all require the target host).
+#   • macOS  arm64  → .app + .dmg   (aarch64-apple-darwin)
+#   • Windows x64   → .msi + .exe   (x86_64-pc-windows-msvc)
+# Bundles are uploaded as build artifacts; this workflow does NOT create a
+# GitHub Release or sign/notarize (that's a later step — dsd §13 B6.7).
+#
+# Run it manually from the Actions tab (workflow_dispatch), or push a v* tag.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # Apple Silicon runner
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm --prefix frontend ci
+
+      # Fetch the platform's yt-dlp / ffmpeg / uv sidecars and build the SPA up
+      # front, with an explicit bash shell (Git-Bash on Windows) so we don't
+      # depend on Tauri's beforeBuildCommand shell resolution. The tauri build
+      # below re-runs the same before-command, but by then both are a no-op.
+      - name: Fetch sidecars (yt-dlp / ffmpeg / uv)
+        shell: bash
+        run: bash src-tauri/binaries/fetch-sidecars.sh
+
+      - name: Build frontend
+        run: npm --prefix frontend run build
+
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          args: --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-player-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+          if-no-files-found: error

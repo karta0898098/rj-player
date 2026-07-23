@@ -23,6 +23,12 @@ tauri-build = { version = "2.6.3", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
+# `macos-private-api` drives the transparent / overlay-titlebar window on macOS
+# (see lib.rs). It MUST be declared here in the base deps, not a target table:
+# tauri-build reads the manifest to match it against `macOSPrivateApi` in
+# tauri.conf.json and only looks at `[dependencies]`. The feature is a no-op on
+# Windows/Linux (Tauri gates the private-API code behind cfg(target_os=macos)),
+# so it stays cross-platform.
 tauri = { version = "2.11.3", features = ["macos-private-api"] }
 tauri-plugin-log = "2"
 # Platform detection helper (kept for the deferred Windows caption-button work).
@@ -36,6 +42,19 @@ tauri-plugin-dialog = "2"
 # of the exact same server code the standalone `./dev.sh` binary uses — it does
 # not fork or reimplement anything.
 rj-player-backend = { path = "../backend" }
-# OS keychain for the LLM API key (dsd.md §13.6): stored in the macOS Keychain,
-# never in plaintext config. `apple-native` uses the Security framework.
+# OS keychain for the LLM API key (dsd.md §13.6): stored in the OS credential
+# store, never in plaintext config. The backend uses the same `keyring` API on
+# every platform; only the native backend feature differs per target (below).
+
+# macOS: Keychain via the Security framework.
+[target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+
+# Windows: Credential Manager via the Windows-native backend.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+# Linux (split/dev deploy hosts): Secret Service via the sync-secret-service
+# backend, so no async runtime feature is required.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }

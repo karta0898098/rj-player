@@ -454,12 +454,12 @@ fn get_settings(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     }))
 }
 
-/// Reveal a path in Finder (dsd.md's Global Settings "儲存位置" section —
-/// design_handoff_titlebar_settings/). Creates the directory first if it
-/// doesn't exist yet (e.g. the model cache before anything's been
-/// downloaded) so the button always does something sensible instead of
-/// erroring on a path that's merely empty rather than actually broken.
-/// macOS only for now — no Windows build/test environment yet.
+/// Reveal a path in the OS file manager (dsd.md's Global Settings "儲存位置"
+/// section — design_handoff_titlebar_settings/): Finder on macOS, Explorer on
+/// Windows. Creates the directory first if it doesn't exist yet (e.g. the model
+/// cache before anything's been downloaded) so the button always does something
+/// sensible instead of erroring on a path that's merely empty rather than
+/// actually broken.
 #[tauri::command]
 fn reveal_in_finder(path: String) -> Result<(), String> {
     if !std::path::Path::new(&path).exists() {
@@ -470,6 +470,17 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
         std::process::Command::new("open")
             .arg("-R")
             .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    // Explorer's `/select,` reveals + highlights the target in its parent. It
+    // wants a single token after the comma, so pass path and arg together; a
+    // trailing separator is fine. (Explorer returns a non-zero exit code even
+    // on success, so we only care that spawn() itself worked.)
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{path}"))
             .spawn()
             .map_err(|e| e.to_string())?;
     }
