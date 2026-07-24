@@ -61,10 +61,24 @@ export function formatPipelineStatusLabel(status, stage, pct) {
 // Whisper sometimes assigns a cue a very long end_ms that actually extends
 // into trailing silence/non-speech audio (e.g. a cue spanning 44s-74s),
 // keeping the subtitle pinned on screen far longer than the line itself
-// needs. Lines rarely need more than ~8s on screen, so the overlay caps how
-// long any single cue is *displayed* to start_ms + MAX_CUE_DISPLAY_MS,
-// regardless of how far out its end_ms actually is — see SubtitleOverlay.jsx.
-export const MAX_CUE_DISPLAY_MS = 8000;
+// needs. The overlay therefore caps how long any single cue is *displayed*
+// to start_ms + MAX_CUE_DISPLAY_MS, regardless of how far out its end_ms
+// actually is — see SubtitleOverlay.jsx.
+//
+// This is a blunt instrument: it cannot tell a bogus end_ms from a line
+// that genuinely is sung that long, so it must be loose enough never to
+// truncate a well-formed cue. At the old 8s it routinely did — on a
+// measured run, 5 of 43 cues (11%) ran 9.4-11.8s and lost 1.4-3.8s of
+// display each, which reads as "long subtitles disappear early".
+//
+// 30s matches asr.py's `_SEPARATED_VAD_PARAMS` max_speech_duration_s, the
+// hard cap on how long a cue can legitimately be, so this now only fires
+// on genuinely malformed timings — a safety net, not a routine limiter.
+// The real fix for those is trimming end_ms to the last voiced frame using
+// the separated vocals' energy profile (worker-side, not yet implemented);
+// this cap stays as the fallback for raw-mix runs, which have no such
+// signal.
+export const MAX_CUE_DISPLAY_MS = 30000;
 
 // Binary-search `cues` (must already be sorted by start_ms) for the cue
 // active at `timeMs`: the cue with `start_ms <= timeMs < end_ms` (dsd.md
