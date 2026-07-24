@@ -311,14 +311,18 @@ async fn process_download_job(
     // Audio extraction is for the future Whisper step (Phase 2) and must
     // never block marking the video as downloaded/usable.
     let audio_path = store.audio_path(&video_id);
-    if let Err(err) = ytdlp.extract_audio(&video_path, &audio_path).await {
-        tracing::warn!(%video_id, %err, "audio extraction failed (non-fatal)");
-        hub.publish(
-            &video_id,
-            JobEvent::Log {
-                line: format!("audio extraction failed (non-fatal): {err}"),
-            },
-        );
+    match ytdlp.extract_audio(&video_path, &audio_path).await {
+        Ok(()) => meta.audio_extract_error = None,
+        Err(err) => {
+            tracing::warn!(%video_id, %err, "audio extraction failed (non-fatal)");
+            hub.publish(
+                &video_id,
+                JobEvent::Log {
+                    line: format!("audio extraction failed (non-fatal): {err}"),
+                },
+            );
+            meta.audio_extract_error = Some(err.to_string());
+        }
     }
 
     // Manual source-language + Chinese CC, fetched in one pass (dsd.md

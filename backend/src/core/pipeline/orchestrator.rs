@@ -144,15 +144,18 @@ pub async fn run_pipeline(
 
     let audio_path = store.audio_path(video_id);
     if !audio_path.exists() {
-        fail(
-            store,
-            hub,
-            &mut meta,
-            Stage::Asr,
-            "audio.wav not found; cannot run pipeline".to_string(),
-            None,
-        )
-        .await;
+        // `audio.wav` is written by ffmpeg at download time (non-fatal
+        // there, per dsd.md §7) -- if that extraction failed, surface why
+        // instead of just "not found", since the ffmpeg error (missing
+        // binary, Gatekeeper-blocked unsigned sidecar, codec issue, ...) is
+        // the actual thing the user needs to act on.
+        let message = match &meta.audio_extract_error {
+            Some(reason) => format!(
+                "audio.wav not found; cannot run pipeline (audio extraction failed: {reason})"
+            ),
+            None => "audio.wav not found; cannot run pipeline".to_string(),
+        };
+        fail(store, hub, &mut meta, Stage::Asr, message, None).await;
         return;
     }
 

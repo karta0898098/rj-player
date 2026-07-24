@@ -122,6 +122,16 @@ pub struct VideoMeta {
     /// on-disk-compat reason as `source_lang`/`max_height`.
     #[serde(default)]
     pub source_cc_lang: Option<String>,
+    /// Why `audio.wav` extraction failed at download time (ffmpeg missing,
+    /// unsigned/quarantined sidecar blocked by Gatekeeper, etc.), if it did.
+    /// Audio extraction is non-fatal to the download job (dsd.md §7's
+    /// failure-isolation contract) so this never sets `status`/`last_error`
+    /// on its own -- it's surfaced later, as extra context, if the pipeline
+    /// subsequently fails because `audio.wav` is missing (see
+    /// `orchestrator::run_pipeline`). `#[serde(default)]` for the same
+    /// on-disk-compat reason as `source_cc_lang`.
+    #[serde(default)]
+    pub audio_extract_error: Option<String>,
 }
 
 impl VideoMeta {
@@ -142,6 +152,7 @@ impl VideoMeta {
             source_lang: None,
             max_height: None,
             source_cc_lang: None,
+            audio_extract_error: None,
         }
     }
 }
