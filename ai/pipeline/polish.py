@@ -12,6 +12,12 @@ under strict constraints:
     touched, so a corrected line still belongs to its cue;
   * only within-line fixes of likely mis-hearings — no rewriting, merging,
     splitting, or "improving";
+  * a line that is clearly ASR residue rather than lyrics may come back as
+    an EMPTY STRING — the one form of deletion allowed, and the reason the
+    line count (not the content) is what's held fixed. The caller drops
+    emptied cues. This catches the long-tail hallucinations that
+    `hallucinations.py`'s fixed blocklist can't know about, using the
+    surrounding lyrics as context;
   * unsure -> return the line unchanged;
   * do NOT reconstruct official lyrics from memory beyond fixing what's
     written — both because the sung take may differ (covers, live edits)
@@ -67,6 +73,12 @@ def _build_polish_prompt(
         f"line for every input; never merge, skip, deduplicate, or combine.\n"
         f"- Only correct words within a line. Never rewrite, reorder, split, "
         f"embellish, or translate.\n"
+        f"- If a line is clearly NOT lyrics but leftover ASR noise, return an "
+        f"EMPTY STRING \"\" in its place (keeping the line count): platform "
+        f"boilerplate (thanks for watching / please subscribe / subtitles by "
+        f"…), or text with no relation to the surrounding lyrics sitting over "
+        f"an instrumental stretch. Use this ONLY when confident — a short, "
+        f"repeated, or fragmentary line is normal in lyrics and is NOT noise.\n"
         f"- If a line already looks right, or you are not confident about a "
         f"fix, return it UNCHANGED.\n"
         f"- Do not insert lyrics you remember that are not reflected in the "

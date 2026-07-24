@@ -43,7 +43,18 @@ import json
 import os
 import sys
 
-from pipeline import align, asr, assemble, cc, energy_gate, polish, protocol, separate, translate
+from pipeline import (
+    align,
+    asr,
+    assemble,
+    cc,
+    energy_gate,
+    hallucinations,
+    polish,
+    protocol,
+    separate,
+    translate,
+)
 
 # tokenizer/romaji are imported lazily (inside the `reading` branch of
 # run_generate_subtitles below) rather than here at module scope: both pull
@@ -338,6 +349,12 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 clip_timestamps=clip_ts,
             )
             source = "asr"
+            # Known-hallucination blocklist (hallucinations.py): pure text
+            # matching, so it runs on EVERY free-ASR result — including
+            # raw-mix runs, where neither energy layer exists — and needs
+            # no LLM key. First and cheapest of the three filters.
+            if raw_segments:
+                raw_segments = hallucinations.filter_segments(raw_segments)
             # Vocal-energy gate (energy_gate.py): only meaningful when we
             # actually transcribed the separated vocals — the raw mix has
             # music energy everywhere, so there'd be no signal to gate on.
@@ -371,6 +388,16 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
                 if applied:
                     for seg, new_text in zip(raw_segments, new_texts):
                         seg["text"] = new_text
+                    # An emptied line is the LLM flagging that cue as ASR
+                    # residue rather than lyrics (polish.py's one allowed
+                    # form of deletion) — drop those cues.
+                    before = len(raw_segments)
+                    raw_segments = [s for s in raw_segments if s["text"].strip()]
+                    if len(raw_segments) < before:
+                        protocol.log(
+                            f"[polish] dropped {before - len(raw_segments)} cue(s) "
+                            "the LLM flagged as ASR noise"
+                        )
                     polished = True
         emit_fn({"id": req_id, "event": "stage", "stage": "asr", "status": "done"})
 

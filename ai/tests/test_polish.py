@@ -65,6 +65,21 @@ class PolishTests(unittest.TestCase):
     def test_empty_input_is_a_noop(self):
         self.assertEqual(polish.polish_lines([]), ([], False))
 
+    def test_emptied_line_is_passed_through_for_the_caller_to_drop(self):
+        # The LLM's one allowed form of deletion: blank a line it judges to
+        # be ASR residue. polish_lines must NOT re-fill it with the
+        # original — worker.py drops emptied cues.
+        fake = FakeTranslator(replies=["嘘だよ", ""])
+        with mock.patch.object(polish, "_select_translator", return_value=fake):
+            out, applied = polish.polish_lines(["うそだよ", "ご視聴ありがとうございました"])
+        self.assertEqual(out, ["嘘だよ", ""])
+        self.assertTrue(applied)
+
+    def test_prompt_allows_blanking_asr_residue(self):
+        prompt = polish._build_polish_prompt(["a", "b"], "ja", None, None, None)
+        self.assertIn("EMPTY STRING", prompt)
+        self.assertIn("ONLY when confident", prompt)
+
     def test_prompt_carries_context_and_constraints(self):
         prompt = polish._build_polish_prompt(
             ["line a", "line b"], "ja", "My Song Title", "My Channel", "user hint"
