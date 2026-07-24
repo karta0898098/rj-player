@@ -57,23 +57,23 @@ class EnergyGateTests(unittest.TestCase):
             _seg(2100, 3900, "real line"),
             _seg(4500, 5900, "outro hallucination"),
         ]
-        kept = energy_gate.filter_segments(segs, self.vocals)
+        kept = energy_gate.gate_segments(segs, self.vocals)
         self.assertEqual([s["text"] for s in kept], ["real line"])
 
     def test_cue_overlapping_vocal_onset_survives(self):
         # Straddles the silence->tone boundary: it contains real singing,
         # so the (peak-based) gate must keep it.
-        kept = energy_gate.filter_segments([_seg(1500, 2500)], self.vocals)
+        kept = energy_gate.gate_segments([_seg(1500, 2500)], self.vocals)
         self.assertEqual(len(kept), 1)
 
     def test_cue_beyond_audio_end_is_kept_not_dropped(self):
         # No evidence either way -> keep (never drop on missing data).
-        kept = energy_gate.filter_segments([_seg(7000, 8000)], self.vocals)
+        kept = energy_gate.gate_segments([_seg(7000, 8000)], self.vocals)
         self.assertEqual(len(kept), 1)
 
     def test_unreadable_file_keeps_everything(self):
         segs = [_seg(0, 1000), _seg(2000, 3000)]
-        kept = energy_gate.filter_segments(segs, os.path.join(self._tmp.name, "nope.wav"))
+        kept = energy_gate.gate_segments(segs, os.path.join(self._tmp.name, "nope.wav"))
         self.assertEqual(kept, segs)
 
     def test_stereo_wav_degrades_to_no_filtering(self):
@@ -84,10 +84,55 @@ class EnergyGateTests(unittest.TestCase):
             f.setframerate(16000)
             f.writeframes(b"\x00\x00" * 3200)
         segs = [_seg(0, 100)]
-        self.assertEqual(energy_gate.filter_segments(segs, stereo), segs)
+        self.assertEqual(energy_gate.gate_segments(segs, stereo), segs)
 
     def test_empty_segments_pass_through(self):
-        self.assertEqual(energy_gate.filter_segments([], self.vocals), [])
+        self.assertEqual(energy_gate.gate_segments([], self.vocals), [])
+
+
+class TailTrimTests(unittest.TestCase):
+    """end_ms trimming: silence after the line is cut, singing never is."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.vocals = os.path.join(self._tmp.name, "vocals.wav")
+        _write_wav(self.vocals)  # tone 2-4s inside 6s of audio
+
+    def test_end_ms_stretched_into_silence_is_trimmed_back(self):
+        # Whisper's classic bogus end_ms: line ends at 4s, cue claims 5.9s.
+        seg = _seg(2000, 5900, "real line")
+        energy_gate.gate_segments([seg], self.vocals)
+        # Trimmed to the last voiced frame (~4.0s) + 300ms tail padding.
+        self.assertAlmostEqual(seg["end_ms"], 4300, delta=200)
+
+    def test_sustained_note_to_the_very_end_is_not_shortened(self):
+        # A held "ああああ" running to the cue's end: energy is present
+        # throughout, so there is no trailing silence to remove.
+        held = os.path.join(self._tmp.name, "held.wav")
+        _write_wav(held, seconds=6.0, tone_start=1.0, tone_end=6.0)
+        seg = _seg(1000, 6000, "ああああ")
+        energy_gate.gate_segments([seg], held)
+        self.assertEqual(seg["end_ms"], 6000)
+
+    def test_small_overhang_is_left_alone(self):
+        # Under _MIN_TRIM_MS of trailing silence — not worth rewriting.
+        seg = _seg(2000, 4200, "real line")
+        energy_gate.gate_segments([seg], self.vocals)
+        self.assertEqual(seg["end_ms"], 4200)
+
+    def test_start_ms_and_text_are_never_touched(self):
+        seg = _seg(2000, 5900, "real line")
+        energy_gate.gate_segments([seg], self.vocals)
+        self.assertEqual(seg["start_ms"], 2000)
+        self.assertEqual(seg["text"], "real line")
+
+    def test_trim_never_takes_a_cue_below_min_length(self):
+        # Cue starts in silence, only its tail catches the tone onset;
+        # trimming must not collapse it to a sliver.
+        seg = _seg(1900, 5900, "onset")
+        energy_gate.gate_segments([seg], self.vocals)
+        self.assertGreaterEqual(seg["end_ms"] - seg["start_ms"], 800)
 
 
 class VoicedRegionsTests(unittest.TestCase):

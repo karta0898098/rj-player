@@ -73,6 +73,24 @@ def _frame_rms(vocals_path: str) -> Optional[tuple["object", int]]:
 _REGION_PAD_S = 0.5
 _REGION_MERGE_GAP_S = 1.0
 
+# End-trim knobs (see `gate_segments`). Whisper regularly stretches a cue's
+# end_ms into the silence after the line, which pins the subtitle on screen
+# long after the singing stopped (and can overlap later cues, breaking the
+# frontend's binary search). Trimming to the last voiced frame fixes the
+# data instead of masking it at display time.
+#   - _TAIL_PAD_MS: keep a little air after the last voiced frame so a note
+#     decaying below the threshold isn't cut off mid-breath;
+#   - _MIN_TRIM_MS: leave alone unless there's a meaningful amount of
+#     trailing silence — no point rewriting timings by a few frames;
+#   - _MIN_CUE_MS: never trim a cue below a readable duration, however the
+#     energy looks.
+# Only the TAIL is trimmed: leading silence inside a cue merely shows the
+# subtitle a touch early (harmless, often desirable), and trimming starts
+# risks clipping a soft onset — exactly what we fought to recover.
+_TAIL_PAD_MS = 300
+_MIN_TRIM_MS = 500
+_MIN_CUE_MS = 800
+
 
 def voiced_regions(vocals_path: str) -> Optional[list[float]]:
     """Voiced time regions of the separated vocals, as a flat
@@ -142,14 +160,54 @@ def voiced_regions(vocals_path: str) -> Optional[list[float]]:
         return None
 
 
-def filter_segments(
+def _trim_tail(
+    seg: dict, rms, lo: int, threshold: float, frame_ms: int
+) -> Optional[int]:
+    """Shorten `seg["end_ms"]` to its last voiced frame; return ms removed.
+
+    Returns None when nothing was trimmed: no meaningful trailing silence
+    (`_MIN_TRIM_MS`), or trimming would take the cue under `_MIN_CUE_MS`.
+    Only ever shortens — a cue whose singing runs to its very end (a held
+    note) comes back untouched.
+    """
+    import numpy as np
+
+    hi = int(-(-seg["end_ms"] // frame_ms))
+    voiced = np.nonzero(rms[lo:hi] >= threshold)[0]
+    if not len(voiced):
+        return None
+    last_voiced_end_ms = (lo + int(voiced[-1]) + 1) * frame_ms
+    new_end = last_voiced_end_ms + _TAIL_PAD_MS
+    if new_end > seg["end_ms"] - _MIN_TRIM_MS:
+        return None  # nothing worth trimming
+    new_end = max(new_end, seg["start_ms"] + _MIN_CUE_MS)
+    if new_end >= seg["end_ms"]:
+        return None
+    removed = seg["end_ms"] - new_end
+    seg["end_ms"] = new_end
+    return removed
+
+
+def gate_segments(
     segments: list[dict], vocals_path: str, debug: bool = False
 ) -> list[dict]:
-    """Return `segments` minus the ones with no vocal energy in their range.
+    """Apply the vocal-energy profile to a cue list: drop, then trim.
 
-    Each segment needs `start_ms`/`end_ms` (the shape asr.transcribe
-    yields). On ANY problem — unreadable/odd wav, no frames, numpy missing
-    — the original list is returned unchanged and a log line says so.
+    Two fixes from one profile (reading and analysing the wav once):
+    1. DROP cues with no vocal energy anywhere in their range — Whisper's
+       hallucinations over instrumental stretches;
+    2. TRIM each surviving cue's `end_ms` back to its last voiced frame
+       (+`_TAIL_PAD_MS`), so a cue whose end_ms was stretched into the
+       silence after the line stops being pinned on screen — and stops
+       overlapping later cues, which breaks the frontend's binary search.
+       A held note ("ああああ") has energy throughout, so its last voiced
+       frame IS its end: sustained singing is never shortened, only
+       trailing silence is. Cue text and `start_ms` are never touched.
+
+    Segments need `start_ms`/`end_ms` (the shape asr.transcribe yields) and
+    are modified in place. On ANY problem — unreadable/odd wav, no frames,
+    numpy missing — the original list is returned unchanged and a log line
+    says so.
 
     Logging contract (this is the tuning instrument for the gate):
     - one summary line always: threshold + how it was derived + counts;
@@ -157,6 +215,7 @@ def filter_segments(
       dropped real line must be visible in the logs, not silent;
     - the closest-call KEPT cue always (lowest peak that survived), showing
       how much margin the quietest real line had;
+    - a trim summary when any cue's end_ms moved;
     - `debug=True` (VOCAL_ENERGY_GATE=debug): one line per cue, every cue.
     """
     if not segments:
@@ -175,6 +234,7 @@ def filter_segments(
 
         kept: list[dict] = []
         dropped: list[dict] = []
+        trims: list[tuple[dict, int]] = []
         closest_kept: Optional[tuple[float, dict]] = None
         for seg in segments:
             lo = max(0, int(seg["start_ms"] // frame_ms))
@@ -194,6 +254,10 @@ def filter_segments(
                     f"{seg.get('text', '')[:24]!r}"
                 )
             if keep:
+                if not past_end:
+                    trimmed_ms = _trim_tail(seg, rms, lo, threshold, frame_ms)
+                    if trimmed_ms:
+                        trims.append((seg, trimmed_ms))
                 kept.append(seg)
                 if not past_end and (closest_kept is None or peak < closest_kept[0]):
                     closest_kept = (peak, seg)
@@ -217,6 +281,14 @@ def filter_segments(
                 f"[energy_gate] quietest kept cue: {c['start_ms']}-{c['end_ms']}ms "
                 f"peak={peak:.4f} (margin {peak / threshold:.1f}x over threshold) "
                 f"{c.get('text', '')[:24]!r}"
+            )
+        if trims:
+            worst = max(trims, key=lambda t: t[1])
+            protocol.log(
+                f"[energy_gate] trimmed trailing silence off {len(trims)} cue(s), "
+                f"{sum(t[1] for t in trims) / 1000:.1f}s total; largest "
+                f"-{worst[1] / 1000:.1f}s on the cue now ending at "
+                f"{worst[0]['end_ms']}ms {worst[0].get('text', '')[:24]!r}"
             )
         return kept
     except Exception as e:  # noqa: BLE001 - gate must never fail the pipeline

@@ -368,7 +368,7 @@ def run_generate_subtitles(req_id, params: dict, emit_fn=protocol.emit) -> dict 
             # live per job) wins; the VOCAL_ENERGY_GATE env var is the
             # no-backend fallback for driving worker.py directly.
             if asr_audio == vocals_path and raw_segments and gate_mode != "off":
-                raw_segments = energy_gate.filter_segments(
+                raw_segments = energy_gate.gate_segments(
                     raw_segments, vocals_path, debug=gate_mode == "debug"
                 )
             if lyrics_polish and raw_segments:
